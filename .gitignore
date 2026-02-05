@@ -1,0 +1,8 @@
+.venv
+.venv_dev
+.codex
+data
+docs
+tests
+.env
+verification.md

@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sidebar-width: 220px;
+  --header-height: 48px;
+  --bg-primary: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-muted: #f1f5f9;
+  --bg-sidebar: #0b1220;
+  --bg-sidebar-hover: #111b2e;
+  --bg-sidebar-active: #172554;
+  --text-primary: #0f172a;
+  --text-muted: #475569;
+  --text-sidebar: #94a3b8;
+  --text-sidebar-active: #ffffff;
+  --accent: #1e40af;
+  --accent-hover: #1d4ed8;
+  --border-color: #e2e8f0;
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --stock-up: #dc2626;
+  --stock-down: #16a34a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  min-height: 100dvh;
+}
+
+/* 全局可见焦点：确保键盘可用性 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border bg-white shadow-sm;
+    border-color: var(--border-color);
+  }
+
+  .card-muted {
+    @apply rounded-xl border shadow-sm;
+    border-color: var(--border-color);
+    background: var(--bg-surface-muted);
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-200 cursor-pointer;
+  }
+
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #ffffff;
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-hover);
+  }
+
+  .btn-secondary {
+    border: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+  }
+
+  .btn-secondary:hover {
+    background: var(--bg-surface-muted);
+  }
+
+  .btn-danger {
+    background: var(--danger);
+    color: #ffffff;
+  }
+
+  .btn-danger:hover {
+    background: var(--danger-hover);
+  }
+
+  .icon-btn {
+    @apply inline-flex items-center justify-center rounded-lg p-2 transition-colors duration-200 cursor-pointer;
+  }
+
+  .icon-btn:hover {
+    background: var(--bg-surface-muted);
+  }
+
+  .input {
+    @apply w-full rounded-lg border bg-white px-3 py-2 text-sm transition-colors duration-200;
+    border-color: var(--border-color);
+  }
+
+  .input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .input:disabled {
+    background: var(--bg-surface-muted);
+    color: var(--text-muted);
+  }
+
+  .tablist {
+    @apply flex flex-wrap gap-1 rounded-lg p-1;
+    background: var(--bg-surface-muted);
+  }
+
+  .tab {
+    @apply rounded-md px-4 py-2 text-sm transition-colors duration-200 cursor-pointer;
+  }
+
+  .tab-active {
+    @apply shadow-sm;
+    background: var(--bg-surface);
+    color: var(--accent);
+  }
+
+  .tab-inactive {
+    color: var(--text-muted);
+  }
+
+  .tab-inactive:hover {
+    color: var(--text-primary);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}

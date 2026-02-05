@@ -1,0 +1,41 @@
+# Web框架
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# 数据库
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+
+# HTTP客户端
+# 注意: httpx 0.28+ 移除了 proxies 参数和 app= ASGI 测试支持
+# LLMClient 和测试依赖这些特性，因此限制版本
+httpx>=0.26.0,<0.28.0
+aiohttp>=3.9.0
+
+# 数据源增强（对标 daily_stock_analysis：筹码分布等）
+akshare>=1.12.0
+pandas>=2.0.0
+py-mini-racer>=0.6.0
+
+# 数据验证
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# 爬虫
+playwright>=1.41.0
+
+# 定时任务
+apscheduler>=3.10.0
+
+# 工具
+python-multipart>=0.0.6
+sse-starlette>=2.0.0
+python-dotenv>=1.0.0
+filelock>=3.13.0
+
+# 交易日/节假日判断（可选依赖，helpers 会在缺依赖时自动降级）
+chinese-calendar
+
+# 开发
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
