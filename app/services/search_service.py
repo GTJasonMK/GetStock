@@ -61,6 +61,14 @@ class SearchService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _get_datasource_manager(self):
+        """获取数据源管理器（按 DB 配置初始化）。"""
+        from app.datasources.manager import get_datasource_manager
+
+        manager = get_datasource_manager()
+        await manager.initialize(self.db)
+        return manager
+
     async def search_by_words(self, words: str) -> Dict[str, Any]:
         """
         自然语言选股
@@ -105,17 +113,16 @@ class SearchService:
 
     async def _fetch_stocks_by_conditions(self, conditions: List[Dict]) -> List[Dict]:
         """根据条件获取股票"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
         # 默认获取涨幅排名
         if not conditions:
-            async with EastMoneyClient() as client:
-                return await client.get_stock_rank("change_percent", "desc", 50)
+            return await manager.get_stock_rank(sort_by="change_percent", order="desc", limit=50)
 
         # 分离主条件和过滤条件
         primary_condition = conditions[0]
         condition_type = primary_condition.get("type")
-        filter_conditions = conditions[1:]
+        filter_conditions = conditions[1:]  # noqa: F841
 
         # 收集市场过滤和排除条件
         market_filters = []
@@ -127,96 +134,73 @@ class SearchService:
                 else:
                     market_filters.append(c.get("value"))
 
-        async with EastMoneyClient() as client:
-            results: list[dict] = []
+        results: list[dict] = []
 
-            if condition_type == "limit_up":
-                results = await client.get_limit_up_stocks()
-            elif condition_type == "limit_down":
-                results = await client.get_limit_down_stocks()
-            elif condition_type in ["main_money_in", "net_money_in"]:
-                results = await client.get_money_flow_rank("main_net_inflow", "desc", 50)
-            elif condition_type == "main_money_out":
-                results = await client.get_money_flow_rank("main_net_inflow", "asc", 50)
-            elif condition_type == "big_order_buy":
-                results = await client.get_money_flow_rank("big_net_inflow", "desc", 50)
-            elif condition_type == "long_tiger":
-                result = await client.get_long_tiger(None)
-                results = [item.model_dump() for item in result.items]
-            elif condition_type == "volume_ratio_gt":
-                value = primary_condition.get("value", 2)
-                results = await client.get_volume_ratio_rank(value, 50)
-            elif condition_type == "change_percent_gt":
-                # 获取涨幅排名，然后按阈值过滤
-                value = primary_condition.get("value", 5)
-                all_stocks = await client.get_stock_rank("change_percent", "desc", 200)
-                results = [
-                    s for s in all_stocks
-                    if s.get("change_percent", 0) > value
-                ]
-            elif condition_type == "change_percent_lt":
-                # 获取跌幅排名，然后按阈值过滤
-                value = primary_condition.get("value", 5)
-                all_stocks = await client.get_stock_rank("change_percent", "asc", 200)
-                results = [
-                    s for s in all_stocks
-                    if s.get("change_percent", 0) < -value
-                ]
-            elif condition_type == "pe_lt":
-                # 获取股票列表并按市盈率过滤
-                value = primary_condition.get("value", 20)
-                all_stocks = await client.get_stock_rank("pe", "asc", 200)
-                results = [
-                    s for s in all_stocks
-                    if 0 < s.get("pe", 0) < value
-                ]
-            elif condition_type == "pb_lt":
-                # 获取股票列表并按市净率过滤
-                value = primary_condition.get("value", 2)
-                all_stocks = await client.get_stock_rank("pb", "asc", 200)
-                results = [
-                    s for s in all_stocks
-                    if 0 < s.get("pb", 0) < value
-                ]
-            elif condition_type == "volume_up_price_up":
-                # 放量上涨: 获取涨幅排名，按量比过滤
-                all_stocks = await client.get_stock_rank("change_percent", "desc", 200)
-                results = [
-                    s for s in all_stocks
-                    if s.get("change_percent", 0) > 0 and s.get("volume_ratio", 0) > 1.5
-                ]
-            elif condition_type == "volume_down_price_down":
-                # 缩量下跌: 获取跌幅排名，按低量比过滤
-                all_stocks = await client.get_stock_rank("change_percent", "asc", 200)
-                results = [
-                    s for s in all_stocks
-                    if s.get("change_percent", 0) < 0 and s.get("volume_ratio", 0) < 0.8
-                ]
-            elif condition_type == "institution_buy":
-                # 机构买入: 从龙虎榜获取机构相关数据
-                result = await client.get_long_tiger(None)
-                results = [
-                    item.model_dump() for item in result.items
-                    if "机构" in (item.reason or "")
-                ]
-            elif condition_type == "market":
-                # 按板块筛选
-                market_value = primary_condition.get("value", "main")
-                node = self._get_market_node(market_value)
-                results = await client.get_stock_rank("change_percent", "desc", 50, node=node)
-            else:
-                # 未实现的条件，使用默认排名
-                results = await client.get_stock_rank("change_percent", "desc", 50)
+        if condition_type == "limit_up":
+            results = await manager.get_limit_up_stocks()
+        elif condition_type == "limit_down":
+            results = await manager.get_limit_down_stocks()
+        elif condition_type in ["main_money_in", "net_money_in"]:
+            results = await manager.get_money_flow_rank("main_net_inflow", "desc", 50)
+        elif condition_type == "main_money_out":
+            results = await manager.get_money_flow_rank("main_net_inflow", "asc", 50)
+        elif condition_type == "big_order_buy":
+            results = await manager.get_money_flow_rank("big_net_inflow", "desc", 50)
+        elif condition_type == "long_tiger":
+            result = await manager.get_long_tiger(None)
+            results = [item.model_dump() for item in result.items]
+        elif condition_type == "volume_ratio_gt":
+            value = primary_condition.get("value", 2)
+            results = await manager.get_volume_ratio_rank(min_ratio=value, limit=50)
+        elif condition_type == "change_percent_gt":
+            # 获取涨幅排名，然后按阈值过滤
+            value = primary_condition.get("value", 5)
+            all_stocks = await manager.get_stock_rank(sort_by="change_percent", order="desc", limit=200)
+            results = [s for s in all_stocks if s.get("change_percent", 0) > value]
+        elif condition_type == "change_percent_lt":
+            # 获取跌幅排名，然后按阈值过滤
+            value = primary_condition.get("value", 5)
+            all_stocks = await manager.get_stock_rank(sort_by="change_percent", order="asc", limit=200)
+            results = [s for s in all_stocks if s.get("change_percent", 0) < -value]
+        elif condition_type == "pe_lt":
+            # 获取股票列表并按市盈率过滤
+            value = primary_condition.get("value", 20)
+            all_stocks = await manager.get_stock_rank(sort_by="pe", order="asc", limit=200)
+            results = [s for s in all_stocks if 0 < (s.get("pe") or 0) < value]
+        elif condition_type == "pb_lt":
+            # 获取股票列表并按市净率过滤
+            value = primary_condition.get("value", 2)
+            all_stocks = await manager.get_stock_rank(sort_by="pb", order="asc", limit=200)
+            results = [s for s in all_stocks if 0 < (s.get("pb") or 0) < value]
+        elif condition_type == "volume_up_price_up":
+            # 放量上涨: 获取涨幅排名，按量比过滤
+            all_stocks = await manager.get_stock_rank(sort_by="change_percent", order="desc", limit=200)
+            results = [s for s in all_stocks if s.get("change_percent", 0) > 0 and s.get("volume_ratio", 0) > 1.5]
+        elif condition_type == "volume_down_price_down":
+            # 缩量下跌: 获取跌幅排名，按低量比过滤
+            all_stocks = await manager.get_stock_rank(sort_by="change_percent", order="asc", limit=200)
+            results = [s for s in all_stocks if s.get("change_percent", 0) < 0 and s.get("volume_ratio", 0) < 0.8]
+        elif condition_type == "institution_buy":
+            # 机构买入: 从龙虎榜获取机构相关数据
+            result = await manager.get_long_tiger(None)
+            results = [item.model_dump() for item in result.items if "机构" in (item.reason or "")]
+        elif condition_type == "market":
+            # 按板块筛选
+            market_value = primary_condition.get("value", "main")
+            results = await manager.get_stock_rank(sort_by="change_percent", order="desc", limit=50, market=market_value)
+        else:
+            # 未实现的条件，使用默认排名
+            results = await manager.get_stock_rank(sort_by="change_percent", order="desc", limit=50)
 
-            # 应用市场过滤
-            if market_filters:
-                results = self._filter_by_market(results, market_filters)
+        # 应用市场过滤
+        if market_filters:
+            results = self._filter_by_market(results, market_filters)
 
-            # 应用排除条件
-            if excludes:
-                results = self._exclude_by_market(results, excludes)
+        # 应用排除条件
+        if excludes:
+            results = self._exclude_by_market(results, excludes)
 
-            return results[:50]
+        return results[:50]
 
     @staticmethod
     def _get_market_node(market: str) -> str:
@@ -292,29 +276,27 @@ class SearchService:
 
     async def get_hot_strategies(self) -> List[Dict]:
         """获取热门选股策略"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
-        async with EastMoneyClient() as client:
-            return await client.get_hot_strategies()
+        return await manager.get_hot_strategies()
 
     async def search_sector(self, words: str) -> Dict[str, Any]:
         """搜索板块/概念"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
-        async with EastMoneyClient() as client:
-            # 判断搜索类型
-            if "概念" in words:
-                results = await client.search_concept(words.replace("概念", "").strip())
-            elif "行业" in words:
-                results = await client.search_industry(words.replace("行业", "").strip())
-            else:
-                # 同时搜索
-                concepts = await client.search_concept(words)
-                industries = await client.search_industry(words)
-                results = concepts + industries
+        # 判断搜索类型
+        if "概念" in words:
+            results = await manager.search_concept(words.replace("概念", "").strip())
+        elif "行业" in words:
+            results = await manager.search_industry(words.replace("行业", "").strip())
+        else:
+            # 同时搜索
+            concepts = await manager.search_concept(words)
+            industries = await manager.search_industry(words)
+            results = concepts + industries
 
-            return {
-                "words": words,
-                "results": results,
-                "total": len(results),
-            }
+        return {
+            "words": words,
+            "results": results,
+            "total": len(results),
+        }

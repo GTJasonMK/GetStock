@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.settings import DataSourceConfig
+from app.datasources.registry import load_client_class
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,8 @@ class DataSourceManager:
         self._clients: Dict[str, Any] = {}
         self._priority_order: List[str] = self.DEFAULT_PRIORITY.copy()
         self._initialized = False
+        # 数据源 API Key/Token（从 datasource_config.api_key 加载；用于需鉴权的数据源，如 tushare）
+        self._api_keys: Dict[str, str] = {}
         # 是否已从数据库加载过 DataSourceConfig（用于区分“未配置”与“已配置但禁用/排序”）
         self._has_db_config: bool = False
         # DB 已出现（显式配置过）的数据源集合；用于解决“只配置了部分数据源导致能力白名单过滤为空”的隐蔽问题
@@ -159,6 +162,7 @@ class DataSourceManager:
                 select(DataSourceConfig).order_by(DataSourceConfig.priority)
             )
             all_configs = result.scalars().all()
+            self._api_keys = {c.source_name: (c.api_key or "") for c in all_configs}
 
             # 只要表里有配置，就视为“存在显式配置”。但对某个能力而言：
             # - 若该能力允许的数据源在 DB 中完全未出现，则视为“未配置”，回退到方法级默认顺序；
@@ -170,6 +174,7 @@ class DataSourceManager:
             if not all_configs:
                 # 数据库中未配置任何数据源：回退到默认优先级（保持与“未配置”场景一致）
                 self._priority_order = self.DEFAULT_PRIORITY.copy()
+                self._api_keys = {}
                 for source in self.DEFAULT_PRIORITY:
                     if source not in self._breakers:
                         self._breakers[source] = CircuitBreaker(name=source)
@@ -227,6 +232,17 @@ class DataSourceManager:
         allowed_set = set(allowed or [])
         return [s for s in default_order if s in allowed_set]
 
+    def _get_breaker(self, source: str) -> CircuitBreaker:
+        """获取/创建熔断器（允许显式调用未在默认优先级中的数据源，如 cls/fund）。"""
+        name = (source or "").strip()
+        if not name:
+            raise ValueError("source 不能为空")
+        breaker = self._breakers.get(name)
+        if breaker is None:
+            breaker = CircuitBreaker(name=name)
+            self._breakers[name] = breaker
+        return breaker
+
     @property
     def has_db_config(self) -> bool:
         """是否存在数据库配置（用于区分“未配置”与“已配置但禁用”）。"""
@@ -249,20 +265,20 @@ class DataSourceManager:
     def _get_client(self, source: str) -> Any:
         """获取数据源客户端实例"""
         if source not in self._clients:
-            if source == "sina":
-                from app.datasources.sina import SinaClient
-                self._clients[source] = SinaClient()
-            elif source == "eastmoney":
-                from app.datasources.eastmoney import EastMoneyClient
-                self._clients[source] = EastMoneyClient()
-            elif source == "tencent":
-                from app.datasources.tencent import TencentClient
-                self._clients[source] = TencentClient()
-            elif source == "tushare":
-                from app.datasources.tushare import TushareClient
-                self._clients[source] = TushareClient()
-            else:
-                raise ValueError(f"未知数据源: {source}")
+            cls = load_client_class(source)
+
+            # 仅对“需要鉴权”的数据源传参，其它数据源保持零参数构造，减少耦合
+            init_kwargs: Dict[str, Any] = {}
+            if source == "tushare":
+                token = (self._api_keys.get("tushare") or "").strip()
+                if token:
+                    init_kwargs["token"] = token
+
+            try:
+                self._clients[source] = cls(**init_kwargs)
+            except TypeError:
+                # 兼容：单测 FakeClient 可能不接受 token 参数
+                self._clients[source] = cls()
 
         return self._clients[source]
 
@@ -307,9 +323,7 @@ class DataSourceManager:
         last_error: Optional[Exception] = None
 
         for source in sources_to_try:
-            breaker = self._breakers.get(source)
-            if not breaker:
-                continue
+            breaker = self._get_breaker(source)
 
             if not breaker.can_execute():
                 logger.debug(f"数据源 {source} 处于熔断状态，跳过")
@@ -345,6 +359,75 @@ class DataSourceManager:
 
         # 所有数据源都失败
         error_msg = f"所有数据源 {sources_to_try} 都失败，方法: {method_name}"
+        logger.error(error_msg)
+        if last_error:
+            raise last_error
+        raise Exception(error_msg)
+
+    async def execute_with_failover_map(
+        self,
+        methods: Dict[str, str],
+        *args,
+        sources: Optional[List[str]] = None,
+        validate: Optional[Callable[[T], bool]] = None,
+        **kwargs,
+    ) -> T:
+        """
+        使用故障转移执行“不同数据源不同方法名”的调用。
+
+        典型场景：
+        - 东财方法叫 `get_stock_rank_enhanced`，新浪兜底方法叫 `get_stock_rank`；
+        - 业务侧希望统一成一个能力：`get_stock_rank()`。
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        # 注意：sources=[] 表示显式“不尝试任何数据源”，不能回退到默认优先级
+        sources_to_try = self._priority_order if sources is None else sources
+        last_error: Optional[Exception] = None
+
+        for source in sources_to_try:
+            method_name = (methods or {}).get(source)
+            if not method_name:
+                continue
+
+            breaker = self._get_breaker(source)
+
+            if not breaker.can_execute():
+                logger.debug(f"数据源 {source} 处于熔断状态，跳过")
+                continue
+
+            try:
+                client = self._get_client(source)
+                method = getattr(client, method_name, None)
+                if not method:
+                    logger.debug(f"数据源 {source} 不支持方法 {method_name}")
+                    continue
+
+                result = await method(*args, **kwargs)
+                if validate and not validate(result):
+                    raise ValueError(f"数据源 {source}.{method_name} 返回无效结果")
+
+                # 若返回对象支持 source 字段，则补齐来源，便于前端诊断当前使用的是哪个数据源
+                try:
+                    if hasattr(result, "source"):
+                        cur = getattr(result, "source", "")
+                        if not cur:
+                            setattr(result, "source", source)
+                except Exception:
+                    pass
+
+                breaker.record_success()
+                logger.debug(f"数据源 {source}.{method_name} 调用成功")
+                return result
+
+            except Exception as e:
+                breaker.record_failure()
+                last_error = e
+                logger.warning(f"数据源 {source}.{method_name} 调用失败: {e}")
+                continue
+
+        error_msg = f"所有数据源 {sources_to_try} 都失败，methods: {methods}"
         logger.error(error_msg)
         if last_error:
             raise last_error
@@ -401,6 +484,647 @@ class DataSourceManager:
             code,
             sources=sources,
             validate=_validate_minute_response,
+        )
+
+    async def get_stock_money_flow(self, stock_code: str, days: int = 10) -> List[Any]:
+        """获取个股资金流向明细（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_money_flow",
+            stock_code,
+            days,
+            sources=sources,
+        )
+
+    async def get_money_trend(self, stock_code: str, days: int = 10) -> List[Any]:
+        """获取资金趋势（默认新浪；当前实现为兜底空列表）"""
+        sources = await self._resolve_sources(allowed=["sina"], default_order=["sina"])
+        return await self.execute_with_failover(
+            "get_money_trend",
+            stock_code,
+            days,
+            sources=sources,
+        )
+
+    async def get_stock_concepts(self, stock_code: str) -> List[Any]:
+        """获取个股概念/板块（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_concepts",
+            stock_code,
+            sources=sources,
+        )
+
+    async def get_hot_stocks(self, market: str = "A", limit: int = 20) -> List[Any]:
+        """获取热门股票（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_hot_stocks",
+            market,
+            limit,
+            sources=sources,
+        )
+
+    async def get_stock_fundamental(self, stock_code: str) -> Dict[str, Any]:
+        """获取个股估值/基本面（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_fundamental",
+            stock_code,
+            sources=sources,
+        )
+
+    async def get_financial_report(self, stock_code: str) -> Dict[str, Any]:
+        """获取财务报表（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_financial_report",
+            stock_code,
+            sources=sources,
+        )
+
+    async def get_stock_rank(
+        self,
+        sort_by: str = "change_percent",
+        order: str = "desc",
+        limit: int = 50,
+        market: str = "all",
+    ) -> List[Dict[str, Any]]:
+        """获取股票排行榜（东财优先，新浪兜底）"""
+
+        def _validate_rank(resp: Any) -> bool:
+            return bool(resp)
+
+        sources = await self._resolve_sources(
+            allowed=["eastmoney", "sina"],
+            default_order=["eastmoney", "sina"],
+        )
+        return await self.execute_with_failover_map(
+            {
+                "eastmoney": "get_stock_rank_enhanced",
+                "sina": "get_stock_rank",
+            },
+            sort_by=sort_by,
+            order=order,
+            limit=limit,
+            market=market,
+            sources=sources,
+            validate=_validate_rank,
+        )
+
+    async def get_industry_research_reports(self, name: str = "", code: str = "", limit: int = 20) -> List[Any]:
+        """获取行业研报（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_industry_research_reports",
+            name,
+            code,
+            limit,
+            sources=sources,
+        )
+
+    async def get_news(self, source: str, limit: int = 20) -> List[Any]:
+        """获取资讯列表（支持 cls/sina）。"""
+        name = (source or "").strip().lower()
+        if not name:
+            raise ValueError("source 不能为空")
+        return await self.execute_with_failover(
+            "get_news",
+            int(limit),
+            sources=[name],
+        )
+
+    async def get_telegraph(self, source: str, page: int = 1, page_size: int = 20) -> Any:
+        """获取电报/快讯（cls: get_telegraph；sina: get_live_telegraph）。"""
+        name = (source or "").strip().lower()
+        if not name:
+            raise ValueError("source 不能为空")
+
+        method_map = {
+            "cls": "get_telegraph",
+            "sina": "get_live_telegraph",
+        }
+        method = method_map.get(name)
+        if not method:
+            raise ValueError(f"不支持的电报来源: {source}")
+
+        return await self.execute_with_failover(
+            method,
+            int(page),
+            int(page_size),
+            sources=[name],
+        )
+
+    async def search_funds(self, keyword: str, fund_type: str | None = None, limit: int = 20) -> Any:
+        """搜索基金（默认使用天天基金）。"""
+        return await self.execute_with_failover(
+            "search_funds",
+            keyword,
+            fund_type,
+            int(limit),
+            sources=["fund"],
+        )
+
+    async def get_fund_detail(self, fund_code: str) -> Any:
+        """获取基金详情（默认使用天天基金）。"""
+        return await self.execute_with_failover(
+            "get_fund_detail",
+            fund_code,
+            sources=["fund"],
+        )
+
+    async def get_fund_net_value(self, fund_code: str, days: int = 30) -> Any:
+        """获取基金净值历史（默认使用天天基金）。"""
+        return await self.execute_with_failover(
+            "get_fund_net_value",
+            fund_code,
+            int(days),
+            sources=["fund"],
+        )
+
+    async def get_stock_rating_summary(self, stock_code: str) -> Dict[str, Any]:
+        """获取机构评级汇总（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_rating_summary",
+            stock_code,
+            sources=sources,
+        )
+
+    async def get_stock_money_flow_history(self, stock_code: str, days: int = 30) -> List[Any]:
+        """获取个股历史资金流向（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_money_flow_history",
+            stock_code,
+            days,
+            sources=sources,
+        )
+
+    async def get_shareholder_count(self, stock_code: str) -> List[Any]:
+        """获取股东人数变化（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_shareholder_count",
+            stock_code,
+            sources=sources,
+        )
+
+    async def get_top_holders(self, stock_code: str, holder_type: str = "float") -> List[Any]:
+        """获取十大股东/十大流通股东（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_top_holders",
+            stock_code,
+            holder_type,
+            sources=sources,
+        )
+
+    async def get_dividend_history(self, stock_code: str) -> List[Any]:
+        """获取分红送转历史（默认东财）"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_dividend_history",
+            stock_code,
+            sources=sources,
+        )
+
+    # ============ MarketService 复用方法 ============
+
+    async def get_long_tiger(self, trade_date: Optional[str] = None) -> Any:
+        """获取龙虎榜（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_long_tiger",
+            trade_date,
+            sources=sources,
+        )
+
+    async def get_economic_data(self, indicator: str, count: int = 20) -> Any:
+        """获取宏观经济数据（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_economic_data",
+            indicator,
+            int(count),
+            sources=sources,
+        )
+
+    async def get_sector_stocks(self, bk_code: str, limit: int = 50) -> Any:
+        """获取板块成分股（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_sector_stocks",
+            bk_code,
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_concept_rank(
+        self,
+        sort_by: str = "change_percent",
+        order: str = "desc",
+        limit: int = 20,
+    ) -> Any:
+        """获取概念板块排名（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_concept_rank",
+            sort_by,
+            order,
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_industry_rank(
+        self,
+        sort_by: str = "change_percent",
+        order: str = "desc",
+        limit: int = 20,
+    ) -> Any:
+        """获取行业排名（默认东财）。"""
+
+        def _validate(resp: Any) -> bool:
+            try:
+                items = getattr(resp, "items", None)
+                return bool(items)
+            except Exception:
+                return False
+
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_industry_rank",
+            sort_by,
+            order,
+            int(limit),
+            sources=sources,
+            validate=_validate,
+        )
+
+    async def get_board_money_flow_rank(
+        self,
+        category: str = "hangye",
+        sort_by: str = "main_net_inflow",
+        order: str = "desc",
+        limit: int = 50,
+        sources: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """获取行业/概念板块资金流向排名（东财优先，新浪兜底）。"""
+
+        def _normalize_category(val: str) -> str:
+            name = (val or "").strip().lower()
+            if name in ("hangye", "industry"):
+                return "hangye"
+            if name in ("gainian", "concept"):
+                return "gainian"
+            if name in ("diqu", "region"):
+                return "diqu"
+            return name or "hangye"
+
+        normalized_category = _normalize_category(category)
+
+        # 兼容前端历史参数
+        if sort_by in ("main_inflow", "main_net_inflow", "zjlr", "netamount"):
+            em_sort_by = "main_net_inflow"
+        else:
+            em_sort_by = sort_by
+
+        sina_sort_map = {
+            "main_inflow": "netamount",
+            "main_net_inflow": "netamount",
+            "zjlr": "netamount",
+            "netamount": "netamount",
+            "change_percent": "avg_changeratio",
+            "avg_changeratio": "avg_changeratio",
+            "turnover": "turnover",
+        }
+        sina_sort = sina_sort_map.get(sort_by, "netamount")
+
+        if sources is None:
+            sources_to_try = await self._resolve_sources(
+                allowed=["eastmoney", "sina"],
+                default_order=["eastmoney", "sina"],
+            )
+        else:
+            override: List[str] = []
+            for s in sources or []:
+                name = (s or "").strip().lower()
+                if name in ("eastmoney", "sina") and name not in override:
+                    override.append(name)
+            if not override:
+                raise ValueError("sources 不能为空")
+            sources_to_try = await self._resolve_sources(allowed=override, default_order=override)
+
+        last_error: Optional[Exception] = None
+        for source in sources_to_try:
+            breaker = self._get_breaker(source)
+            if not breaker.can_execute():
+                logger.debug(f"数据源 {source} 处于熔断状态，跳过")
+                continue
+
+            try:
+                client = self._get_client(source)
+                method = getattr(client, "get_board_money_flow_rank", None)
+                if not method:
+                    logger.debug(f"数据源 {source} 不支持方法 get_board_money_flow_rank")
+                    continue
+
+                if source == "eastmoney":
+                    rows = await method(
+                        category=normalized_category,
+                        sort_by=em_sort_by,
+                        order=order,
+                        limit=int(limit),
+                    )
+                elif source == "sina":
+                    rows = await method(
+                        category=normalized_category,
+                        limit=int(limit),
+                        sort=sina_sort,
+                        order=order,
+                    )
+                else:
+                    continue
+
+                if not rows:
+                    raise ValueError(f"数据源 {source}.get_board_money_flow_rank 返回为空")
+
+                breaker.record_success()
+                return rows
+
+            except Exception as e:
+                breaker.record_failure()
+                last_error = e
+                logger.warning(f"数据源 {source}.get_board_money_flow_rank 调用失败: {e}")
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("所有数据源都失败：get_board_money_flow_rank")
+
+    async def get_stock_money_rank(
+        self,
+        sort_by: str = "main_net_inflow",
+        order: str = "desc",
+        limit: int = 50,
+        sources: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """获取股票资金流入排名（东财优先，新浪兜底）。"""
+        em_sort_map = {
+            # 兼容前端历史参数
+            "main_inflow": "main_net_inflow",
+            "main_net_inflow": "main_net_inflow",
+            "zjlr": "main_net_inflow",
+            "trade": "current_price",
+            "current_price": "current_price",
+            "changeratio": "change_percent",
+            "change_percent": "change_percent",
+        }
+        em_sort = em_sort_map.get(sort_by, "main_net_inflow")
+
+        sina_sort_map = {
+            "main_inflow": "r0_net",
+            "main_net_inflow": "r0_net",
+            "zjlr": "r0_net",
+            "trade": "trade",
+            "current_price": "trade",
+            "changeratio": "changeratio",
+            "change_percent": "changeratio",
+        }
+        sina_sort = sina_sort_map.get(sort_by, "r0_net")
+
+        if sources is None:
+            sources_to_try = await self._resolve_sources(
+                allowed=["eastmoney", "sina"],
+                default_order=["eastmoney", "sina"],
+            )
+        else:
+            override: List[str] = []
+            for s in sources or []:
+                name = (s or "").strip().lower()
+                if name in ("eastmoney", "sina") and name not in override:
+                    override.append(name)
+            if not override:
+                raise ValueError("sources 不能为空")
+            sources_to_try = await self._resolve_sources(allowed=override, default_order=override)
+
+        last_error: Optional[Exception] = None
+        for source in sources_to_try:
+            breaker = self._get_breaker(source)
+            if not breaker.can_execute():
+                logger.debug(f"数据源 {source} 处于熔断状态，跳过")
+                continue
+
+            try:
+                client = self._get_client(source)
+
+                if source == "eastmoney":
+                    method = getattr(client, "get_money_flow_rank", None)
+                    if not method:
+                        logger.debug(f"数据源 {source} 不支持方法 get_money_flow_rank")
+                        continue
+                    rows = await method(sort_by=em_sort, order=order, limit=int(limit))
+                elif source == "sina":
+                    method = getattr(client, "get_stock_money_rank", None)
+                    if not method:
+                        logger.debug(f"数据源 {source} 不支持方法 get_stock_money_rank")
+                        continue
+                    rows = await method(limit=int(limit), sort=sina_sort, order=order)
+                else:
+                    continue
+
+                if not rows:
+                    raise ValueError(f"数据源 {source}.get_stock_money_rank 返回为空")
+
+                breaker.record_success()
+                return rows
+
+            except Exception as e:
+                breaker.record_failure()
+                last_error = e
+                logger.warning(f"数据源 {source}.get_stock_money_rank 调用失败: {e}")
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("所有数据源都失败：get_stock_money_rank")
+
+    async def get_volume_ratio_rank(self, min_ratio: float = 2.0, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取量比排名（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_volume_ratio_rank",
+            float(min_ratio),
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_limit_up_stocks(self) -> List[Dict[str, Any]]:
+        """获取涨停股（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover("get_limit_up_stocks", sources=sources)
+
+    async def get_limit_down_stocks(self) -> List[Dict[str, Any]]:
+        """获取跌停股（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover("get_limit_down_stocks", sources=sources)
+
+    async def get_north_flow(self, days: int = 30) -> Dict[str, Any]:
+        """获取北向资金（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_north_flow",
+            int(days),
+            sources=sources,
+        )
+
+    async def get_bk_dict(self, bk_type: str) -> Any:
+        """获取板块字典（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_bk_dict",
+            bk_type,
+            sources=sources,
+        )
+
+    async def get_stock_research_reports(self, stock_code: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """获取股票研究报告（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_research_reports",
+            stock_code,
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_stock_notices(self, stock_code: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """获取股票公告（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_stock_notices",
+            stock_code,
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_market_indices(self, index_codes: List[str]) -> List[Any]:
+        """获取主要指数行情（默认新浪）。"""
+        sources = await self._resolve_sources(allowed=["sina"], default_order=["sina"])
+        return await self.execute_with_failover(
+            "get_market_indices",
+            index_codes,
+            sources=sources,
+        )
+
+    async def get_a_spot_statistics(self) -> Dict[str, Any]:
+        """获取A股快照统计（东财优先，新浪兜底）。"""
+
+        def _validate_stats(resp: Any) -> bool:
+            return isinstance(resp, dict) and bool(resp.get("total_amount_yi", None) is not None)
+
+        if not self._initialized:
+            await self.initialize()
+
+        # 强制东财优先：与 MarketService.get_market_overview 的历史行为保持一致。
+        sources: List[str] = []
+        for name in ("eastmoney", "sina"):
+            if self._has_db_config and name in self._disabled_sources:
+                continue
+            sources.append(name)
+
+        return await self.execute_with_failover(
+            "get_a_spot_statistics",
+            sources=sources,
+            validate=_validate_stats,
+        )
+
+    async def get_interactive_qa(self, keyword: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """获取投资者互动问答（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_interactive_qa",
+            keyword,
+            int(page),
+            int(page_size),
+            sources=sources,
+        )
+
+    async def get_live_news(self, limit: int = 30) -> List[Any]:
+        """获取新浪 7x24 快讯（用于资讯兜底）。"""
+        sources = await self._resolve_sources(allowed=["sina"], default_order=["sina"])
+        return await self.execute_with_failover(
+            "get_live_news",
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_global_indexes(self) -> Any:
+        """获取全球指数（默认新浪）。"""
+        sources = await self._resolve_sources(allowed=["sina"], default_order=["sina"])
+        return await self.execute_with_failover("get_global_indexes", sources=sources)
+
+    async def get_hot_topics(self, size: int = 20) -> List[Dict[str, Any]]:
+        """获取热门话题（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_hot_topics",
+            int(size),
+            sources=sources,
+        )
+
+    async def get_hot_events(self, size: int = 20) -> List[Dict[str, Any]]:
+        """获取热门事件（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_hot_events",
+            int(size),
+            sources=sources,
+        )
+
+    async def get_invest_calendar(self, year_month: str) -> List[Dict[str, Any]]:
+        """获取投资日历（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_invest_calendar",
+            year_month,
+            sources=sources,
+        )
+
+    async def get_money_flow_rank(
+        self,
+        sort_by: str = "main_net_inflow",
+        order: str = "desc",
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """获取资金流向排名（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "get_money_flow_rank",
+            sort_by,
+            order,
+            int(limit),
+            sources=sources,
+        )
+
+    async def get_hot_strategies(self) -> List[Dict[str, Any]]:
+        """获取热门选股策略（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover("get_hot_strategies", sources=sources)
+
+    async def search_concept(self, keyword: str) -> List[Dict[str, Any]]:
+        """搜索概念板块（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "search_concept",
+            keyword,
+            sources=sources,
+        )
+
+    async def search_industry(self, keyword: str) -> List[Dict[str, Any]]:
+        """搜索行业板块（默认东财）。"""
+        sources = await self._resolve_sources(allowed=["eastmoney"], default_order=["eastmoney"])
+        return await self.execute_with_failover(
+            "search_industry",
+            keyword,
+            sources=sources,
         )
 
     # ============ 管理方法 ============

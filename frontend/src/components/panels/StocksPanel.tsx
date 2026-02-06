@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import api from "@/lib/api";
+import api, { endpoints } from "@/lib/api";
 import StockDetailPanel from "@/components/StockDetail";
 import KLineChart from "@/components/KLineChart";
 import StockMinuteChart from "@/components/charts/StockMinuteChart";
@@ -90,12 +90,12 @@ export default function StocksPanel({ active = true }: { active?: boolean }) {
     const start = async () => {
       // 先尝试用缓存快速回填（页面切换/返回不再“空白等待”）
       try {
-        const cachedGroups = api.peekCache<any>(`/group`);
+        const cachedGroups = api.peekCache<any>(endpoints.group.list());
         if (Array.isArray(cachedGroups) && cachedGroups.length > 0) setGroups(cachedGroups);
       } catch { /* ignore */ }
 
       try {
-        const cachedFollow = api.peekCache<any>(`/stock/follow`);
+        const cachedFollow = api.peekCache<any>(endpoints.stock.followed());
         const rawList = Array.isArray(cachedFollow) ? cachedFollow : [];
         if (rawList.length > 0) {
           const uniq = new Map<string, any>();
@@ -110,7 +110,7 @@ export default function StocksPanel({ active = true }: { active?: boolean }) {
 
           // 行情也尝试回填（若命中缓存则瞬时展示价格/涨跌幅）
           const codes = stockList.map((s: any) => s.stock_code);
-          const cachedQuotes = api.peekCache<any>(`/stock/realtime?codes=${codes.join(",")}`);
+          const cachedQuotes = api.peekCache<any>(endpoints.stock.realtime(codes));
           if (cachedQuotes && Array.isArray(cachedQuotes.quotes)) {
             const quotesMap: Record<string, StockQuote> = {};
             (cachedQuotes.quotes || []).forEach((q: StockQuote) => { quotesMap[q.stock_code] = q; });

@@ -23,47 +23,47 @@ class NewsService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _get_datasource_manager(self):
+        """获取数据源管理器（按 DB 配置初始化）。"""
+        from app.datasources.manager import get_datasource_manager
+
+        manager = get_datasource_manager()
+        await manager.initialize(self.db)
+        return manager
+
     async def get_latest_news(
         self,
         source: Optional[str] = None,
         limit: int = 20
     ) -> NewsResponse:
         """获取最新资讯"""
-        from app.datasources.cls import CLSClient
-        from app.datasources.sina import SinaClient
-
-        items = []
-        cls_client = None
-        sina_client = None
+        manager = await self._get_datasource_manager()
+        items: List[NewsItem] = []
 
         if not source or source == "cls":
-            cls_client = CLSClient()
             try:
-                cls_news = await cls_client.get_news(limit)
-                items.extend(cls_news)
+                cls_news = await manager.get_news("cls", limit)
+                items.extend(cls_news or [])
             except Exception as e:
                 logger.warning(f"从财联社获取资讯失败: {e}")
-            finally:
-                await cls_client.close()
 
         if not source or source == "sina":
-            sina_client = SinaClient()
             try:
                 try:
-                    sina_news = await sina_client.get_news(limit)
-                    items.extend(sina_news)
+                    sina_news = await manager.get_news("sina", limit)
+                    items.extend(sina_news or [])
                 except Exception as e:
                     logger.warning(f"从新浪 feed 获取资讯失败: {e}")
 
                 # 新浪 7x24 快讯作为兜底/补充（在部分网络环境更稳定）
                 if not items or len(items) < max(5, limit // 3):
                     try:
-                        live_news = await sina_client.get_live_news(limit)
-                        items.extend(live_news)
+                        live_news = await manager.get_live_news(limit)
+                        items.extend(live_news or [])
                     except Exception as e:
                         logger.warning(f"从新浪7x24获取资讯失败: {e}")
-            finally:
-                await sina_client.close()
+            except Exception as e:
+                logger.warning(f"从新浪获取资讯失败: {e}")
 
         # 兜底：若主流来源全部失败，使用 AkShare 的“财新主要新闻”保证至少返回可读信息
         # 注意：该源不一定覆盖A股实时要闻，但在部分网络环境更稳定，可避免“页面永远空白”。
@@ -115,40 +115,32 @@ class NewsService:
 
     async def get_telegraph(self, page: int = 1, page_size: int = 20) -> TelegraphResponse:
         """获取财联社电报"""
-        from app.datasources.cls import CLSClient
-        from app.datasources.sina import SinaClient
-
-        cls_client = CLSClient()
+        manager = await self._get_datasource_manager()
         try:
-            telegraph = await cls_client.get_telegraph(page, page_size)
+            telegraph = await manager.get_telegraph("cls", page, page_size)
             # 若数据为空，常见原因是接口变更/被拦截；此时降级到其他来源，避免前端一直空白
             if telegraph and getattr(telegraph, "items", None):
                 return telegraph
         except Exception as e:
             logger.warning(f"获取财联社电报失败，将降级: {e}")
-        finally:
-            await cls_client.close()
 
         # 降级优先：新浪 7x24 快讯（通常比 CLS 更稳定）
-        sina_client = SinaClient()
         try:
-            try:
-                telegraph = await sina_client.get_live_telegraph(page, page_size)
-                if telegraph and getattr(telegraph, "items", None):
-                    return telegraph
-            except Exception as e:
-                logger.warning(f"降级源（新浪7x24）获取失败，将继续降级: {e}")
+            telegraph = await manager.get_telegraph("sina", page, page_size)
+            if telegraph and getattr(telegraph, "items", None):
+                return telegraph
+        except Exception as e:
+            logger.warning(f"降级源（新浪7x24）获取失败，将继续降级: {e}")
 
-            # 最后降级：使用新浪 feed.mix 资讯模拟“快讯”流（保证接口不 500，且尽量返回可用信息）
-            # 由于新浪接口不支持 page 参数，这里通过扩大抓取数量后切片实现粗粒度分页。
-            # 上限 200：避免 page 较大时请求过重。
-            limit = min(max(page * page_size, page_size), 200)
-            news = await sina_client.get_news(limit)
+        # 最后降级：使用新浪 feed.mix 资讯模拟“快讯”流（保证接口不 500，且尽量返回可用信息）
+        # 由于新浪接口不支持 page 参数，这里通过扩大抓取数量后切片实现粗粒度分页。
+        # 上限 200：避免 page 较大时请求过重。
+        limit = min(max(page * page_size, page_size), 200)
+        try:
+            news = await manager.get_news("sina", limit)
         except Exception as e:
             logger.warning(f"降级源（新浪feed）获取失败: {e}")
             return TelegraphResponse(items=[], total=0, has_more=False, source="fallback", notice="快讯数据源暂不可用")
-        finally:
-            await sina_client.close()
 
         # 按时间倒序，切片得到当前页
         news.sort(key=lambda x: x.publish_time, reverse=True)
@@ -182,61 +174,40 @@ class NewsService:
     @cached(ttl_seconds=CacheTTL.GLOBAL_INDEX, prefix="global_indexes")
     async def get_global_indexes(self) -> GlobalIndexResponse:
         """获取全球指数"""
-        from app.datasources.sina import SinaClient
-
-        client = SinaClient()
-        try:
-            indexes = await client.get_global_indexes()
-            return indexes
-        finally:
-            await client.close()
+        manager = await self._get_datasource_manager()
+        return await manager.get_global_indexes()
 
     async def search_news(self, keywords: str, limit: int = 20) -> NewsResponse:
         """搜索新闻"""
-        from app.datasources.cls import CLSClient
-        from app.datasources.sina import SinaClient
-
-        items = []
-        cls_client = None
-        sina_client = None
+        manager = await self._get_datasource_manager()
+        items: List[NewsItem] = []
+        kw_list = (keywords or "").split()
 
         try:
             # 从财联社获取新闻并过滤
-            cls_client = CLSClient()
-            cls_news = await cls_client.get_news(50)
-            for item in cls_news:
-                if any(kw in item.title or kw in (item.content or "") for kw in keywords.split()):
+            cls_news = await manager.get_news("cls", 50)
+            for item in cls_news or []:
+                if any(kw in item.title or kw in (item.content or "") for kw in kw_list):
                     items.append(item)
         except Exception as e:
             logger.warning(f"从财联社获取新闻失败: {e}")
-        finally:
-            if cls_client:
-                await cls_client.close()
 
         try:
-            # 从新浪获取新闻并过滤
-            sina_client = SinaClient()
-            try:
-                sina_news = await sina_client.get_news(50)
-                for item in sina_news:
-                    if any(kw in item.title or kw in (item.content or "") for kw in keywords.split()):
-                        items.append(item)
-            except Exception as e:
-                logger.warning(f"从新浪 feed 获取新闻失败: {e}")
-
-            # 兜底：新浪 7x24 快讯（更偏“快讯流”，但能保证有用信息）
-            try:
-                live_news = await sina_client.get_live_news(80)
-                for item in live_news:
-                    if any(kw in item.title or kw in (item.content or "") for kw in keywords.split()):
-                        items.append(item)
-            except Exception as e:
-                logger.warning(f"从新浪7x24获取新闻失败: {e}")
+            sina_news = await manager.get_news("sina", 50)
+            for item in sina_news or []:
+                if any(kw in item.title or kw in (item.content or "") for kw in kw_list):
+                    items.append(item)
         except Exception as e:
-            logger.warning(f"从新浪获取新闻失败: {e}")
-        finally:
-            if sina_client:
-                await sina_client.close()
+            logger.warning(f"从新浪 feed 获取新闻失败: {e}")
+
+        # 兜底：新浪 7x24 快讯（更偏“快讯流”，但能保证有用信息）
+        try:
+            live_news = await manager.get_live_news(80)
+            for item in live_news or []:
+                if any(kw in item.title or kw in (item.content or "") for kw in kw_list):
+                    items.append(item)
+        except Exception as e:
+            logger.warning(f"从新浪7x24获取新闻失败: {e}")
 
         # 按时间排序
         items.sort(key=lambda x: x.publish_time, reverse=True)
@@ -305,11 +276,10 @@ class NewsService:
     @cached(ttl_seconds=CacheTTL.HOT_TOPICS, prefix="hot_topics")
     async def get_hot_topics(self, size: int = 20) -> Dict[str, Any]:
         """获取热门话题"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
         try:
-            async with EastMoneyClient() as client:
-                topics = await client.get_hot_topics(size)
+            topics = await manager.get_hot_topics(size)
             return {"items": topics}
         except Exception as e:
             logger.warning(f"获取热门话题失败: {e}")
@@ -318,11 +288,10 @@ class NewsService:
     @cached(ttl_seconds=CacheTTL.HOT_TOPICS, prefix="hot_events")
     async def get_hot_events(self, size: int = 20) -> Dict[str, Any]:
         """获取热门事件"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
         try:
-            async with EastMoneyClient() as client:
-                events = await client.get_hot_events(size)
+            events = await manager.get_hot_events(size)
             return {"items": events}
         except Exception as e:
             logger.warning(f"获取热门事件失败: {e}")
@@ -332,11 +301,10 @@ class NewsService:
 
     async def get_invest_calendar(self, year_month: str) -> Dict[str, Any]:
         """获取投资日历"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
         try:
-            async with EastMoneyClient() as client:
-                calendar = await client.get_invest_calendar(year_month)
+            calendar = await manager.get_invest_calendar(year_month)
             return {"items": calendar}
         except Exception as e:
             logger.warning(f"获取投资日历失败: {e}")
@@ -346,11 +314,10 @@ class NewsService:
 
     async def get_stock_notices(self, stock_code: str, limit: int = 20) -> Dict[str, Any]:
         """获取股票公告"""
-        from app.datasources.eastmoney import EastMoneyClient
+        manager = await self._get_datasource_manager()
 
         try:
-            async with EastMoneyClient() as client:
-                raw_notices = await client.get_stock_notices(stock_code, limit)
+            raw_notices = await manager.get_stock_notices(stock_code, limit)
 
             # 映射数据源字段到 StockNoticeItem 所需格式
             notices = []

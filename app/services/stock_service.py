@@ -34,6 +34,14 @@ class StockService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _get_datasource_manager(self):
+        """获取数据源管理器（按 DB 配置初始化）。"""
+        from app.datasources.manager import get_datasource_manager
+
+        manager = get_datasource_manager()
+        await manager.initialize(self.db)
+        return manager
+
     async def get_stock_info(self, stock_code: str) -> Dict[str, Any]:
         """
         获取股票详细信息 (对应Go的Greet方法)
@@ -218,14 +226,11 @@ class StockService:
     @cached(ttl_seconds=CacheTTL.REALTIME_QUOTE, prefix="realtime_quotes")
     async def get_realtime_quotes(self, codes: List[str]) -> List[StockQuote]:
         """获取实时行情"""
-        from app.datasources.manager import get_datasource_manager
-
         # 统一股票代码格式，避免大小写/前缀差异导致数据源拼接错误
         codes = [normalize_stock_code(c) for c in codes or []]
         codes = [c for c in codes if c]
 
-        manager = get_datasource_manager()
-        await manager.initialize(self.db)
+        manager = await self._get_datasource_manager()
 
         try:
             return await manager.get_realtime_quotes(codes)
@@ -245,11 +250,7 @@ class StockService:
         stock_code = normalize_stock_code(stock_code)
         period = (period or "day").strip().lower()
         adjust = (adjust or "qfq").strip().lower()
-        from app.datasources.manager import get_datasource_manager
-
-        manager = get_datasource_manager()
-        # 使用数据库配置初始化数据源管理器，保持与 technical API 一致的策略与 failover 行为
-        await manager.initialize(self.db)
+        manager = await self._get_datasource_manager()
 
         try:
             return await manager.get_kline(stock_code, period=period, count=count, adjust=adjust)
@@ -263,12 +264,9 @@ class StockService:
     @cached(ttl_seconds=CacheTTL.MINUTE_DATA, prefix="minute_data")
     async def get_minute_data(self, stock_code: str) -> MinuteDataResponse:
         """获取分钟数据"""
-        from app.datasources.manager import get_datasource_manager
-
         stock_code = normalize_stock_code(stock_code)
 
-        manager = get_datasource_manager()
-        await manager.initialize(self.db)
+        manager = await self._get_datasource_manager()
 
         try:
             return await manager.get_minute_data(stock_code)
@@ -282,66 +280,45 @@ class StockService:
     @cached(ttl_seconds=CacheTTL.MONEY_FLOW, prefix="stock_money_flow")
     async def get_money_flow(self, stock_code: str, days: int = 10) -> List[Dict]:
         """获取股票资金流向"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_stock_money_flow(stock_code, days)
+        manager = await self._get_datasource_manager()
+        return await manager.get_stock_money_flow(stock_code, days)
 
     @cached(ttl_seconds=CacheTTL.MONEY_FLOW, prefix="money_trend")
     async def get_money_trend(self, stock_code: str, days: int = 10) -> List[Dict]:
         """获取股票资金流向趋势"""
-        from app.datasources.sina import SinaClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        client = SinaClient()
-        try:
-            data = await client.get_money_trend(stock_code, days)
-            return data
-        finally:
-            await client.close()
+        manager = await self._get_datasource_manager()
+        return await manager.get_money_trend(stock_code, days)
 
     @cached(ttl_seconds=CacheTTL.CONCEPTS, prefix="stock_concepts")
     async def get_stock_concepts(self, stock_code: str) -> List[Dict]:
         """获取股票所属概念/板块"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_stock_concepts(stock_code)
+        manager = await self._get_datasource_manager()
+        return await manager.get_stock_concepts(stock_code)
 
     @cached(ttl_seconds=CacheTTL.HOT_STOCKS, prefix="hot_stocks")
     async def get_hot_stocks(self, market: str = "A", limit: int = 20) -> List[Dict]:
         """获取热门股票"""
-        from app.datasources.eastmoney import EastMoneyClient
-
-        async with EastMoneyClient() as client:
-            return await client.get_hot_stocks(market, limit)
+        manager = await self._get_datasource_manager()
+        return await manager.get_hot_stocks(market, limit)
 
     # ============ 基本面数据 ============
 
     @cached(ttl_seconds=CacheTTL.MONEY_FLOW, prefix="fundamental")
     async def get_stock_fundamental(self, stock_code: str) -> Dict[str, Any]:
         """获取个股基本面数据 (PE/PB/ROE/市值等)"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_stock_fundamental(stock_code)
+        manager = await self._get_datasource_manager()
+        return await manager.get_stock_fundamental(stock_code)
 
     @cached(ttl_seconds=CacheTTL.KLINE, prefix="financial_report")
     async def get_financial_report(self, stock_code: str) -> Dict[str, Any]:
         """获取财务报表数据 (利润表/资产负债表)"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_financial_report(stock_code)
+        manager = await self._get_datasource_manager()
+        return await manager.get_financial_report(stock_code)
 
     # ============ 股票排行榜 ============
 
@@ -354,33 +331,14 @@ class StockService:
         market: str = "all",
     ) -> List[Dict]:
         """获取增强版股票排行榜 (含估值指标)"""
-        from app.datasources.eastmoney import EastMoneyClient
-        from app.datasources.sina import SinaClient
+        manager = await self._get_datasource_manager()
+        data = await manager.get_stock_rank(sort_by=sort_by, order=order, limit=limit, market=market)
 
-        data: List[Dict] = []
-        try:
-            async with EastMoneyClient() as client:
-                data = await client.get_stock_rank_enhanced(sort_by, order, limit, market)
-        except Exception as e:
-            logger.warning(f"获取股票排行榜失败，尝试使用新浪兜底: {e}")
-            data = []
-
-        if data:
-            # 兼容前端：MarketPanel 使用 item.pe / item.pb
-            for item in data:
-                if isinstance(item, dict) and "pe" not in item:
-                    item["pe"] = item.get("pe_dynamic") or item.get("pe_ttm") or item.get("pe_static")
-            return data
-
-        # 新浪兜底（push2 在部分网络环境下不可用）
-        sina_client = SinaClient()
-        try:
-            return await sina_client.get_stock_rank(sort_by=sort_by, order=order, limit=limit, market=market)
-        except Exception as e:
-            logger.error(f"获取股票排行榜失败: {e}")
-            return []
-        finally:
-            await sina_client.close()
+        # 兼容前端：MarketPanel 使用 item.pe / item.pb
+        for item in data or []:
+            if isinstance(item, dict) and "pe" not in item:
+                item["pe"] = item.get("pe_dynamic") or item.get("pe_ttm") or item.get("pe_static")
+        return data or []
 
     # ============ 行业研报 ============
 
@@ -389,10 +347,8 @@ class StockService:
         self, name: str = "", code: str = "", limit: int = 20
     ) -> List[Dict]:
         """获取行业研究报告"""
-        from app.datasources.eastmoney import EastMoneyClient
-
-        async with EastMoneyClient() as client:
-            return await client.get_industry_research_reports(name, code, limit)
+        manager = await self._get_datasource_manager()
+        return await manager.get_industry_research_reports(name, code, limit)
 
     # ============ 持仓收益分析 ============
 
@@ -507,60 +463,45 @@ class StockService:
     @cached(ttl_seconds=CacheTTL.NEWS, prefix="rating_summary")
     async def get_rating_summary(self, stock_code: str) -> Dict[str, Any]:
         """获取机构评级汇总(评级分布+一致预期目标价)"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_stock_rating_summary(stock_code)
+        manager = await self._get_datasource_manager()
+        return await manager.get_stock_rating_summary(stock_code)
 
     # ============ 历史资金流向明细 ============
 
     @cached(ttl_seconds=CacheTTL.MONEY_FLOW, prefix="money_flow_history")
     async def get_money_flow_history(self, stock_code: str, days: int = 30) -> List[Dict]:
         """获取个股历史资金流向(每日明细)"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_stock_money_flow_history(stock_code, days)
+        manager = await self._get_datasource_manager()
+        return await manager.get_stock_money_flow_history(stock_code, days)
 
     # ============ 股东人数变化 ============
 
     @cached(ttl_seconds=CacheTTL.KLINE, prefix="shareholder_count")
     async def get_shareholder_count(self, stock_code: str) -> List[Dict]:
         """获取股东人数变化(筹码集中度)"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_shareholder_count(stock_code)
+        manager = await self._get_datasource_manager()
+        return await manager.get_shareholder_count(stock_code)
 
     # ============ 十大股东 ============
 
     @cached(ttl_seconds=CacheTTL.KLINE, prefix="top_holders")
     async def get_top_holders(self, stock_code: str, holder_type: str = "float") -> List[Dict]:
         """获取十大股东或十大流通股东"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_top_holders(stock_code, holder_type)
+        manager = await self._get_datasource_manager()
+        return await manager.get_top_holders(stock_code, holder_type)
 
     # ============ 分红送转历史 ============
 
     @cached(ttl_seconds=CacheTTL.KLINE, prefix="dividend_history")
     async def get_dividend_history(self, stock_code: str) -> List[Dict]:
         """获取分红送转历史"""
-        from app.datasources.eastmoney import EastMoneyClient
-
         stock_code = normalize_stock_code(stock_code)
-
-        async with EastMoneyClient() as client:
-            return await client.get_dividend_history(stock_code)
+        manager = await self._get_datasource_manager()
+        return await manager.get_dividend_history(stock_code)
 
     # ============ 筹码分布（成本分布/获利比例/集中度）===========
 

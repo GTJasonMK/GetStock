@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import api from "@/lib/api";
+import api, { endpoints } from "@/lib/api";
 import BoardMoneyHeatmap from "@/components/charts/BoardMoneyHeatmap";
 import type { BoardMoneyItem } from "@/components/charts/BoardMoneyHeatmap";
 import NorthFlowChart from "@/components/charts/NorthFlowChart";
@@ -37,21 +37,21 @@ export default function MarketPanel() {
   const [marketMapSortBy, setMarketMapSortBy] = useState<"market_cap" | "amount">("market_cap");
 
   useEffect(() => {
-    // 先用缓存快速回填，避免页面切换/返回时出现“整页白屏等待”
+      // 先用缓存快速回填，避免页面切换/返回时出现“整页白屏等待”
     try {
       let endpoint = "";
-      if (tab === "overview") endpoint = `/market/overview`;
-      else if (tab === "industry") endpoint = `/market/industry-rank?sort_by=change_percent&order=desc&limit=20`;
-      else if (tab === "concept") endpoint = `/market/concept-rank?sort_by=change_percent&order=desc&limit=20`;
-      else if (tab === "money") endpoint = `/market/industry-money-flow?category=${moneySubTab === "industry" ? "hangye" : "gainian"}&sort_by=main_inflow`;
-      else if (tab === "stockMoney") endpoint = `/market/stock-money-rank?sort_by=${stockMoneySortBy}&limit=50`;
-      else if (tab === "longTiger") endpoint = longTigerQueryDate ? `/market/long-tiger?trade_date=${longTigerQueryDate}` : `/market/long-tiger`;
-      else if (tab === "limit") endpoint = `/market/limit-stats`;
-      else if (tab === "north") endpoint = `/market/north-flow?days=${northDays}`;
-      else if (tab === "heatmap") endpoint = `/market/industry-money-flow?category=${heatmapCategory === "industry" ? "hangye" : "gainian"}&sort_by=main_inflow`;
-      else if (tab === "marketMap") endpoint = `/stock/rank?sort_by=${marketMapSortBy}&order=desc&limit=200&market=all`;
-      else if (tab === "rank") endpoint = `/stock/rank?sort_by=change_percent&order=desc&limit=50&market=all`;
-      else if (tab === "portfolio") endpoint = `/stock/portfolio/analysis`;
+      if (tab === "overview") endpoint = endpoints.market.overview();
+      else if (tab === "industry") endpoint = endpoints.market.industryRank();
+      else if (tab === "concept") endpoint = endpoints.market.conceptRank();
+      else if (tab === "money") endpoint = endpoints.market.industryMoneyFlow(moneySubTab === "industry" ? "hangye" : "gainian");
+      else if (tab === "stockMoney") endpoint = endpoints.market.stockMoneyRank(stockMoneySortBy);
+      else if (tab === "longTiger") endpoint = endpoints.market.longTiger(longTigerQueryDate);
+      else if (tab === "limit") endpoint = endpoints.market.limitStats();
+      else if (tab === "north") endpoint = endpoints.market.northFlow(northDays);
+      else if (tab === "heatmap") endpoint = endpoints.market.industryMoneyFlow(heatmapCategory === "industry" ? "hangye" : "gainian");
+      else if (tab === "marketMap") endpoint = endpoints.stock.rank(marketMapSortBy, "desc", 200, "all");
+      else if (tab === "rank") endpoint = endpoints.stock.rank();
+      else if (tab === "portfolio") endpoint = endpoints.stock.portfolioAnalysis();
 
       if (endpoint) {
         const cached = api.peekCache<any>(endpoint);

@@ -1079,7 +1079,6 @@ class AIService:
         stock_code = normalize_stock_code(stock_code)
 
         from app.services.stock_service import StockService
-        from app.datasources.eastmoney import EastMoneyClient
 
         stock_service = StockService(self.db)
 
@@ -1091,8 +1090,7 @@ class AIService:
         kline = await stock_service.get_kline(stock_code, "day", 20)
 
         # 获取资金流向
-        async with EastMoneyClient() as client:
-            money_flow = await client.get_stock_money_flow(stock_code, 5)
+        money_flow = await stock_service.get_money_flow(stock_code, 5)
 
         # 构建摘要Prompt
         prompt = f"""请为以下股票生成投资摘要:
@@ -1184,7 +1182,6 @@ class AIService:
     ) -> List[AIRecommendStock]:
         """生成AI推荐股票"""
         from app.services.search_service import SearchService
-        from app.datasources.eastmoney import EastMoneyClient
 
         search_service = SearchService(self.db)
 
@@ -1200,9 +1197,8 @@ class AIService:
         hot_stocks.extend(result.get("results", [])[:5])
 
         # 量比异动
-        async with EastMoneyClient() as client:
-            volume_stocks = await client.get_volume_ratio_rank(2.0, 5)
-        hot_stocks.extend(volume_stocks)
+        result = await search_service.search_by_words("量比大于2")
+        hot_stocks.extend(result.get("results", [])[:5])
 
         # 去重
         seen_codes = set()

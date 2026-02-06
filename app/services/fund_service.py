@@ -16,6 +16,14 @@ class FundService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _get_datasource_manager(self):
+        """获取数据源管理器（按 DB 配置初始化）。"""
+        from app.datasources.manager import get_datasource_manager
+
+        manager = get_datasource_manager()
+        await manager.initialize(self.db)
+        return manager
+
     async def search_funds(
         self,
         keyword: str,
@@ -23,25 +31,13 @@ class FundService:
         limit: int = 20
     ) -> FundSearchResponse:
         """搜索基金"""
-        from app.datasources.fund import TianTianFundClient
-
-        client = TianTianFundClient()
-        try:
-            results = await client.search_funds(keyword, fund_type, limit)
-            return results
-        finally:
-            await client.close()
+        manager = await self._get_datasource_manager()
+        return await manager.search_funds(keyword, fund_type, limit)
 
     async def get_fund_detail(self, fund_code: str) -> Optional[FundDetail]:
         """获取基金详情"""
-        from app.datasources.fund import TianTianFundClient
-
-        client = TianTianFundClient()
-        try:
-            detail = await client.get_fund_detail(fund_code)
-            return detail
-        finally:
-            await client.close()
+        manager = await self._get_datasource_manager()
+        return await manager.get_fund_detail(fund_code)
 
     async def get_fund_net_value(
         self,
@@ -49,11 +45,5 @@ class FundService:
         days: int = 30
     ) -> FundNetValueResponse:
         """获取基金净值历史"""
-        from app.datasources.fund import TianTianFundClient
-
-        client = TianTianFundClient()
-        try:
-            data = await client.get_fund_net_value(fund_code, days)
-            return data
-        finally:
-            await client.close()
+        manager = await self._get_datasource_manager()
+        return await manager.get_fund_net_value(fund_code, days)
