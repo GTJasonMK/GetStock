@@ -5,8 +5,134 @@ import api from "@/lib/api";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/ToastProvider";
 
+type SettingsTab = "datasource" | "ai" | "search" | "general";
+
+type DataSourceConfig = {
+  source_name: string;
+  name?: string;
+  enabled: boolean;
+  priority: number;
+  failure_threshold: number;
+  cooldown_seconds: number;
+  api_key?: string | null;
+};
+
+type AIConfig = {
+  id: number;
+  name: string;
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
+  model_name: string;
+  max_tokens: number;
+  temperature: number;
+  timeout: number;
+};
+
+type SearchEngineStatus = {
+  engine: string;
+  enabled_keys: number;
+  total_keys: number;
+  total_daily_limit?: number | null;
+  total_used_today: number;
+};
+
+type GeneralSettings = {
+  refresh_interval?: number;
+  tushare_token?: string;
+  browser_path?: string;
+  alert_frequency?: string;
+  summary_prompt?: string;
+  question_prompt?: string;
+  open_alert?: boolean;
+  version_check?: boolean;
+  [key: string]: unknown;
+};
+
+type AIConfigForm = {
+  name: string;
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
+  model_name: string;
+  max_tokens: number;
+  temperature: number;
+  timeout: number;
+};
+
+const SETTINGS_TABS: Array<{ key: SettingsTab; label: string }> = [
+  { key: "ai", label: "AI 配置" },
+  { key: "datasource", label: "数据源" },
+  { key: "search", label: "搜索引擎" },
+  { key: "general", label: "通用设置" },
+];
+
+const toNumberOr = (value: unknown, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+};
+
+const getDataSourceName = (row: { source_name: string; name?: string }): string => {
+  const name = String(row.source_name || row.name || "").trim();
+  return name;
+};
+
+const normalizeDataSource = (raw: unknown): DataSourceConfig | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const sourceName = String(obj.source_name || obj.name || "").trim();
+  if (!sourceName) return null;
+
+  return {
+    source_name: sourceName,
+    name: typeof obj.name === "string" ? obj.name : undefined,
+    enabled: obj.enabled !== false,
+    priority: toNumberOr(obj.priority, 0),
+    failure_threshold: toNumberOr(obj.failure_threshold, 3),
+    cooldown_seconds: toNumberOr(obj.cooldown_seconds, 300),
+    api_key: typeof obj.api_key === "string" ? obj.api_key : obj.api_key == null ? null : String(obj.api_key),
+  };
+};
+
+const normalizeAIConfig = (raw: unknown): AIConfig | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const id = toNumberOr(obj.id, NaN);
+  if (!Number.isFinite(id)) return null;
+  return {
+    id,
+    name: String(obj.name || ""),
+    enabled: obj.enabled !== false,
+    base_url: String(obj.base_url || ""),
+    api_key: String(obj.api_key || ""),
+    model_name: String(obj.model_name || ""),
+    max_tokens: toNumberOr(obj.max_tokens, 4096),
+    temperature: toNumberOr(obj.temperature, 0.7),
+    timeout: toNumberOr(obj.timeout, 60),
+  };
+};
+
+const normalizeSearchEngine = (raw: unknown): SearchEngineStatus | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const engine = String(obj.engine || "").trim();
+  if (!engine) return null;
+  return {
+    engine,
+    enabled_keys: toNumberOr(obj.enabled_keys, 0),
+    total_keys: toNumberOr(obj.total_keys, 0),
+    total_daily_limit: obj.total_daily_limit == null ? null : toNumberOr(obj.total_daily_limit, 0),
+    total_used_today: toNumberOr(obj.total_used_today, 0),
+  };
+};
+
 // 未配置数据源时的默认展示（与后端 DataSourceManager.DEFAULT_PRIORITY 对齐）
-const DEFAULT_DATASOURCE_CONFIGS = [
+const DEFAULT_DATASOURCE_CONFIGS: DataSourceConfig[] = [
   { source_name: "sina", enabled: true, priority: 0, failure_threshold: 3, cooldown_seconds: 300, api_key: null },
   { source_name: "eastmoney", enabled: true, priority: 1, failure_threshold: 3, cooldown_seconds: 300, api_key: null },
   { source_name: "tencent", enabled: true, priority: 2, failure_threshold: 3, cooldown_seconds: 300, api_key: null },
@@ -15,16 +141,16 @@ const DEFAULT_DATASOURCE_CONFIGS = [
 
 export default function SettingsPanel() {
   const toast = useToast();
-  const [tab, setTab] = useState<"datasource" | "ai" | "search" | "general">("ai");
-  const [dataSources, setDataSources] = useState<any[]>([]);
-  const [aiConfigs, setAIConfigs] = useState<any[]>([]);
-  const [searchEngines, setSearchEngines] = useState<any[]>([]);
+  const [tab, setTab] = useState<SettingsTab>("ai");
+  const [dataSources, setDataSources] = useState<DataSourceConfig[]>([]);
+  const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([]);
+  const [searchEngines, setSearchEngines] = useState<SearchEngineStatus[]>([]);
 
   // AI配置编辑状态
-  const [editingConfig, setEditingConfig] = useState<any>(null);
+  const [editingConfig, setEditingConfig] = useState<AIConfig | null>(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [deleteConfigConfirm, setDeleteConfigConfirm] = useState<{ id: number; name: string } | null>(null);
-  const [configForm, setConfigForm] = useState({
+  const [configForm, setConfigForm] = useState<AIConfigForm>({
     name: "",
     enabled: true,
     base_url: "",
@@ -36,7 +162,7 @@ export default function SettingsPanel() {
   });
 
   // 通用设置
-  const [generalSettings, setGeneralSettings] = useState<any>(null);
+  const [generalSettings, setGeneralSettings] = useState<GeneralSettings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -48,19 +174,38 @@ export default function SettingsPanel() {
         api.getSettings().catch(() => null),
       ]);
 
+      const normalizedDataSources = Array.isArray(ds)
+        ? ds.map((item) => normalizeDataSource(item)).filter((item): item is DataSourceConfig => !!item)
+        : [];
+      const normalizedAIConfigs = Array.isArray(configs)
+        ? configs.map((item) => normalizeAIConfig(item)).filter((item): item is AIConfig => !!item)
+        : [];
+      const enginesRaw =
+        engines &&
+        typeof engines === "object" &&
+        Array.isArray((engines as { engines?: unknown[] }).engines)
+          ? (engines as { engines: unknown[] }).engines
+          : [];
+      const normalizedSearchEngines = enginesRaw
+        .map((item) => normalizeSearchEngine(item))
+        .filter((item): item is SearchEngineStatus => !!item);
+      const normalizedSettings = settings && typeof settings === "object"
+        ? (settings as GeneralSettings)
+        : {};
+
       // 兼容“DB 里只配置了部分数据源”的情况：依然把所有已知数据源都展示出来，
       // 否则用户会误以为系统只支持 sina，且无法启用 eastmoney/tencent 导致 K 线不可用。
-      let merged: any[] = [];
-      if (Array.isArray(ds) && ds.length > 0) {
-        const byName = new Map<string, any>();
-        for (const c of ds) {
-          const name = String(c?.source_name || c?.name || "").trim();
+      let merged: DataSourceConfig[] = [];
+      if (normalizedDataSources.length > 0) {
+        const byName = new Map<string, DataSourceConfig>();
+        for (const c of normalizedDataSources) {
+          const name = getDataSourceName(c);
           if (!name) continue;
           byName.set(name, c);
         }
 
         merged = DEFAULT_DATASOURCE_CONFIGS.map((d) => {
-          const name = String(d.source_name || "").trim();
+          const name = getDataSourceName(d);
           const hit = byName.get(name);
           if (hit) return { ...d, ...hit };
           // 兼容“DB 里只配置了部分数据源”的情况：
@@ -70,10 +215,10 @@ export default function SettingsPanel() {
         });
 
         // 兜底：若后端返回了未知数据源，也展示出来（便于未来扩展）
-        for (const c of ds) {
-          const name = String(c?.source_name || c?.name || "").trim();
+        for (const c of normalizedDataSources) {
+          const name = getDataSourceName(c);
           if (!name) continue;
-          if (!merged.some((x) => (x?.source_name || x?.name) === name)) merged.push(c);
+          if (!merged.some((x) => getDataSourceName(x) === name)) merged.push(c);
         }
       } else {
         // DB 未配置任何数据源：按默认优先级展示（与后端一致）
@@ -81,9 +226,9 @@ export default function SettingsPanel() {
       }
 
       setDataSources(merged);
-      setAIConfigs(configs || []);
-      setSearchEngines(engines?.engines || []);
-      setGeneralSettings(settings || {});
+      setAIConfigs(normalizedAIConfigs);
+      setSearchEngines(normalizedSearchEngines);
+      setGeneralSettings(normalizedSettings);
     } catch { /* ignore */ }
   }, []);
 
@@ -107,13 +252,13 @@ export default function SettingsPanel() {
       await api.resetDataSource(name);
       toast.push({ variant: "success", title: "已重置", message: `数据源「${name}」已重置` });
       fetchData();
-    } catch (e: any) {
-      toast.push({ variant: "error", title: "重置失败", message: e?.message || "请稍后重试" });
+    } catch (e: unknown) {
+      toast.push({ variant: "error", title: "重置失败", message: toErrorMessage(e, "请稍后重试") });
     }
   };
 
-  const handleSaveDataSource = async (row: any) => {
-    const name = String(row?.source_name || row?.name || "").trim();
+  const handleSaveDataSource = async (row: DataSourceConfig) => {
+    const name = getDataSourceName(row);
     if (!name) return;
     try {
       await api.updateDataSource(name, {
@@ -125,8 +270,8 @@ export default function SettingsPanel() {
       });
       toast.push({ variant: "success", title: "已保存", message: `数据源「${name}」配置已更新` });
       fetchData();
-    } catch (e: any) {
-      toast.push({ variant: "error", title: "保存失败", message: e?.message || "请检查配置后重试" });
+    } catch (e: unknown) {
+      toast.push({ variant: "error", title: "保存失败", message: toErrorMessage(e, "请检查配置后重试") });
     }
   };
 
@@ -146,7 +291,7 @@ export default function SettingsPanel() {
     setShowConfigModal(true);
   };
 
-  const openEditConfigModal = (config: any) => {
+  const openEditConfigModal = (config: AIConfig) => {
     setEditingConfig(config);
     setConfigForm({
       name: config.name || "",
@@ -175,8 +320,8 @@ export default function SettingsPanel() {
         title: "保存成功",
         message: editingConfig ? "AI 配置已更新" : "AI 配置已创建",
       });
-    } catch (e: any) {
-      toast.push({ variant: "error", title: "保存失败", message: e?.message || "请检查配置后重试" });
+    } catch (e: unknown) {
+      toast.push({ variant: "error", title: "保存失败", message: toErrorMessage(e, "请检查配置后重试") });
     }
   };
 
@@ -185,12 +330,12 @@ export default function SettingsPanel() {
       await api.deleteAIConfig(id);
       fetchData();
       toast.push({ variant: "success", title: "已删除", message: name ? `已删除「${name}」` : "AI 配置已删除" });
-    } catch (e: any) {
-      toast.push({ variant: "error", title: "删除失败", message: e?.message || "请稍后重试" });
+    } catch (e: unknown) {
+      toast.push({ variant: "error", title: "删除失败", message: toErrorMessage(e, "请稍后重试") });
     }
   };
 
-  const handleToggleConfig = async (config: any) => {
+  const handleToggleConfig = async (config: AIConfig) => {
     try {
       await api.updateAIConfig(config.id, { enabled: !config.enabled });
       fetchData();
@@ -204,8 +349,8 @@ export default function SettingsPanel() {
     try {
       await api.updateSettings(generalSettings);
       toast.push({ variant: "success", title: "保存成功", message: "通用设置已保存" });
-    } catch (e: any) {
-      toast.push({ variant: "error", title: "保存失败", message: e?.message || "请检查配置后重试" });
+    } catch (e: unknown) {
+      toast.push({ variant: "error", title: "保存失败", message: toErrorMessage(e, "请检查配置后重试") });
     } finally {
       setSettingsSaving(false);
     }
@@ -217,16 +362,11 @@ export default function SettingsPanel() {
 
       {/* Tab */}
       <div className="tablist mb-6 w-fit">
-        {[
-          { key: "ai", label: "AI 配置" },
-          { key: "datasource", label: "数据源" },
-          { key: "search", label: "搜索引擎" },
-          { key: "general", label: "通用设置" },
-        ].map((t) => (
+        {SETTINGS_TABS.map((t) => (
           <button
             type="button"
             key={t.key}
-            onClick={() => setTab(t.key as any)}
+            onClick={() => setTab(t.key)}
             className={`tab ${tab === t.key ? "tab-active" : "tab-inactive"}`}
           >
             {t.label}
@@ -338,13 +478,13 @@ export default function SettingsPanel() {
       {/* 数据源管理 */}
       {tab === "datasource" && (
         <div className="space-y-4">
-          {Array.isArray(dataSources) && dataSources.length > 0 && !dataSources.some((d: any) => ["eastmoney", "tencent"].includes(String(d?.source_name || d?.name || "")) && d?.enabled) && (
+          {dataSources.length > 0 && !dataSources.some((d) => ["eastmoney", "tencent"].includes(getDataSourceName(d)) && d.enabled) && (
             <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 text-sm">
               <div className="font-medium">提示：当前未启用 K 线数据源</div>
               <div className="mt-1">K 线图依赖 <span className="font-mono text-xs">eastmoney/tencent</span>，请启用至少一个并点击「保存」。</div>
             </div>
           )}
-          {Array.isArray(dataSources) && dataSources.length > 0 && dataSources.every((d: any) => d && d.enabled === false) && (
+          {dataSources.length > 0 && dataSources.every((d) => d.enabled === false) && (
             <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 text-sm">
               <div className="font-medium">注意：当前所有数据源均为禁用</div>
               <div className="mt-1">这会导致 K 线/分时等接口返回空数据。建议至少启用：</div>
@@ -365,9 +505,9 @@ export default function SettingsPanel() {
                 </tr>
               </thead>
               <tbody>
-                {dataSources.map((row: any) => (
-                  <tr key={row.source_name || row.name} className="border-t">
-                    <td className="px-4 py-3 font-medium">{row.source_name || row.name}</td>
+                {dataSources.map((row) => (
+                  <tr key={getDataSourceName(row)} className="border-t">
+                    <td className="px-4 py-3 font-medium">{getDataSourceName(row)}</td>
                     <td className="px-4 py-3 text-center">
                       <label className="inline-flex items-center gap-2 cursor-pointer">
                         <input
@@ -375,7 +515,7 @@ export default function SettingsPanel() {
                           checked={!!row.enabled}
                           onChange={(e) => {
                             const enabled = e.target.checked;
-                            setDataSources((prev) => prev.map((x: any) => ((x.source_name || x.name) === (row.source_name || row.name) ? { ...x, enabled } : x)));
+                            setDataSources((prev) => prev.map((x) => (getDataSourceName(x) === getDataSourceName(row) ? { ...x, enabled } : x)));
                           }}
                         />
                         <span className={`text-xs ${row.enabled ? "text-green-700" : "text-gray-500"}`}>{row.enabled ? "启用" : "禁用"}</span>
@@ -388,7 +528,7 @@ export default function SettingsPanel() {
                         value={row.priority ?? 0}
                         onChange={(e) => {
                           const v = Number(e.target.value);
-                          setDataSources((prev) => prev.map((x: any) => ((x.source_name || x.name) === (row.source_name || row.name) ? { ...x, priority: Number.isFinite(v) ? v : 0 } : x)));
+                          setDataSources((prev) => prev.map((x) => (getDataSourceName(x) === getDataSourceName(row) ? { ...x, priority: Number.isFinite(v) ? v : 0 } : x)));
                         }}
                       />
                     </td>
@@ -399,7 +539,7 @@ export default function SettingsPanel() {
                         value={row.failure_threshold ?? 3}
                         onChange={(e) => {
                           const v = Number(e.target.value);
-                          setDataSources((prev) => prev.map((x: any) => ((x.source_name || x.name) === (row.source_name || row.name) ? { ...x, failure_threshold: Number.isFinite(v) ? v : 3 } : x)));
+                          setDataSources((prev) => prev.map((x) => (getDataSourceName(x) === getDataSourceName(row) ? { ...x, failure_threshold: Number.isFinite(v) ? v : 3 } : x)));
                         }}
                       />
                     </td>
@@ -410,7 +550,7 @@ export default function SettingsPanel() {
                         value={row.cooldown_seconds ?? 300}
                         onChange={(e) => {
                           const v = Number(e.target.value);
-                          setDataSources((prev) => prev.map((x: any) => ((x.source_name || x.name) === (row.source_name || row.name) ? { ...x, cooldown_seconds: Number.isFinite(v) ? v : 300 } : x)));
+                          setDataSources((prev) => prev.map((x) => (getDataSourceName(x) === getDataSourceName(row) ? { ...x, cooldown_seconds: Number.isFinite(v) ? v : 300 } : x)));
                         }}
                       />
                     </td>
@@ -419,7 +559,7 @@ export default function SettingsPanel() {
                         <button type="button" onClick={() => handleSaveDataSource(row)} className="btn btn-primary text-sm px-3 py-1.5">
                           保存
                         </button>
-                        <button type="button" onClick={() => handleResetDataSource(row.source_name || row.name)} className="btn btn-secondary text-sm px-3 py-1.5">
+                        <button type="button" onClick={() => handleResetDataSource(getDataSourceName(row))} className="btn btn-secondary text-sm px-3 py-1.5">
                           重置熔断
                         </button>
                       </div>

@@ -35,6 +35,11 @@ function formatPct01(v: number) {
   const x = clamp(v, 0, 1) * 100;
   return `${x.toFixed(1)}%`;
 }
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 
 export default function ChipDistributionChart({ code }: { code: string }) {
   const [loading, setLoading] = useState(true);
@@ -50,10 +55,10 @@ export default function ChipDistributionChart({ code }: { code: string }) {
         const data = await api.getChipDistribution(code);
         if (cancelled) return;
         setPayload(data || null);
-      } catch (e: any) {
+      } catch (errorObject: unknown) {
         if (cancelled) return;
         setPayload(null);
-        setError(e?.message || "加载筹码分布失败");
+        setError(getErrorMessage(errorObject, "加载筹码分布失败"));
       } finally {
         if (!cancelled) setLoading(false);
       }

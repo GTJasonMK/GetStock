@@ -20,6 +20,8 @@ DATASOURCE_CLIENT_SPECS: Dict[str, Tuple[str, str]] = {
     "eastmoney": ("app.datasources.eastmoney", "EastMoneyClient"),
     "tencent": ("app.datasources.tencent", "TencentClient"),
     "tushare": ("app.datasources.tushare", "TushareClient"),
+    # 港股/美股 K 线兜底（AkShare）
+    "akshare": ("app.datasources.akshare", "AkShareClient"),
     # news/fund sources（当前不在默认优先级中；按需显式指定 sources 调用）
     "cls": ("app.datasources.cls", "CLSClient"),
     "fund": ("app.datasources.fund", "TianTianFundClient"),

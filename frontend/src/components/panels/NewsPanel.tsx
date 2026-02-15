@@ -5,41 +5,160 @@ import api from "@/lib/api";
 
 type NewsTab = "latest" | "search" | "telegraph" | "global" | "tradingview";
 
+type NewsSearchItem = {
+  news_id?: string;
+  title: string;
+  content: string;
+  source: string;
+  publish_time?: string;
+  url?: string;
+  image_url?: string;
+};
+
+type NewsSearchResponse = {
+  items?: NewsSearchItem[];
+  engine?: string;
+};
+
+type SearchEngineStatus = {
+  engine: string;
+  total_keys: number;
+  enabled_keys: number;
+  total_daily_limit?: number | null;
+  total_used_today: number;
+};
+
+type SearchEngineStatusResponse = {
+  engines?: SearchEngineStatus[];
+};
+
+type LatestNewsItem = {
+  news_id?: string;
+  title: string;
+  content: string;
+  source: string;
+  publish_time?: string;
+  url?: string;
+  image_url?: string;
+};
+
+type LatestNewsResponse = {
+  items?: LatestNewsItem[];
+  total?: number;
+};
+
+type TelegraphItem = {
+  telegraph_id?: string;
+  publish_time?: string;
+  title?: string;
+  content: string;
+  source?: string;
+  importance?: number;
+  tags?: string[];
+};
+
+type TelegraphResponse = {
+  items?: TelegraphItem[];
+  total?: number;
+  has_more?: boolean;
+  source?: string;
+  notice?: string;
+};
+
+type TelegraphMeta = {
+  source?: string;
+  notice?: string;
+};
+
+type GlobalIndexApiItem = {
+  code?: string;
+  name?: string;
+  current?: number;
+  change_percent?: number;
+  change_amount?: number;
+  update_time?: string;
+};
+
+type GlobalIndexesResponse = {
+  indexes?: GlobalIndexApiItem[];
+};
+
+type GlobalIndexItem = {
+  code: string;
+  name: string;
+  price: number | null;
+  change: number | null;
+  change_percent: number | null;
+  update_time?: string;
+};
+
+type TradingViewItem = {
+  id?: string;
+  title: string;
+  source: string;
+  published_at?: string;
+  url?: string;
+};
+
+type TradingViewNewsResponse = {
+  items?: TradingViewItem[];
+  total?: number;
+};
+
+function toErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return fallback;
+}
+
 export default function NewsPanel() {
   const [tab, setTab] = useState<NewsTab>("latest");
   const [keyword, setKeyword] = useState("");
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<NewsSearchItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string>("");
-  const [engines, setEngines] = useState<any[]>([]);
+  const [engines, setEngines] = useState<SearchEngineStatus[]>([]);
   const [selectedEngine, setSelectedEngine] = useState<string>(""); // "" 表示自动
   const [resolvedEngine, setResolvedEngine] = useState<string>("");
 
   // 最新资讯
   const [latestSource, setLatestSource] = useState<string>(""); // ""=自动
-  const [latestItems, setLatestItems] = useState<any[]>([]);
+  const [latestItems, setLatestItems] = useState<LatestNewsItem[]>([]);
   const [latestLoading, setLatestLoading] = useState(false);
   const [latestError, setLatestError] = useState<string>("");
 
   // 快讯相关
-  const [telegraphItems, setTelegraphItems] = useState<any[]>([]);
+  const [telegraphItems, setTelegraphItems] = useState<TelegraphItem[]>([]);
   const [telegraphPage, setTelegraphPage] = useState(1);
   const [telegraphLoading, setTelegraphLoading] = useState(false);
-  const [telegraphMeta, setTelegraphMeta] = useState<{ source?: string; notice?: string } | null>(null);
+  const [telegraphMeta, setTelegraphMeta] = useState<TelegraphMeta | null>(null);
   const [telegraphError, setTelegraphError] = useState<string>("");
 
   // 全球指数
-  const [globalIndexes, setGlobalIndexes] = useState<any[]>([]);
+  const [globalIndexes, setGlobalIndexes] = useState<GlobalIndexItem[]>([]);
   const [globalLoading, setGlobalLoading] = useState(false);
 
   // TradingView
-  const [tvItems, setTvItems] = useState<any[]>([]);
+  const [tvItems, setTvItems] = useState<TradingViewItem[]>([]);
   const [tvLoading, setTvLoading] = useState(false);
   const [tvError, setTvError] = useState<string>("");
 
   // 搜索引擎列表
   useEffect(() => {
-    api.getSearchEngines().then((data) => setEngines(data.engines || [])).catch(() => {});
+    const fetchSearchEngines = async () => {
+      try {
+        const data = (await api.getSearchEngines()) as SearchEngineStatusResponse;
+        setEngines(Array.isArray(data?.engines) ? data.engines : []);
+      } catch {
+        setEngines([]);
+      }
+    };
+
+    fetchSearchEngines();
   }, []);
 
   // 获取最新资讯
@@ -47,11 +166,11 @@ export default function NewsPanel() {
     setLatestLoading(true);
     setLatestError("");
     try {
-      const data = await api.getLatestNews(latestSource || undefined, 30);
-      setLatestItems(data?.items || []);
-    } catch (e: any) {
+      const data = (await api.getLatestNews(latestSource || undefined, 30)) as LatestNewsResponse;
+      setLatestItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (error: unknown) {
       setLatestItems([]);
-      setLatestError(e?.message || "获取最新资讯失败");
+      setLatestError(toErrorMessage(error, "获取最新资讯失败"));
     }
     setLatestLoading(false);
   }, [latestSource]);
@@ -64,16 +183,19 @@ export default function NewsPanel() {
       setTelegraphMeta(null);
     }
     try {
-      const data = await api.getTelegraph(page, 30);
+      const data = (await api.getTelegraph(page, 30)) as TelegraphResponse;
+      const items = Array.isArray(data?.items) ? data.items : [];
       setTelegraphMeta({ source: data?.source, notice: data?.notice });
       if (page === 1) {
-        setTelegraphItems(data?.items || []);
+        setTelegraphItems(items);
       } else {
-        setTelegraphItems((prev) => [...prev, ...(data?.items || [])]);
+        setTelegraphItems((prev) => [...prev, ...items]);
       }
-    } catch (e: any) {
-      setTelegraphError(e?.message || "获取快讯失败");
-      if (page === 1) setTelegraphItems([]);
+    } catch (error: unknown) {
+      setTelegraphError(toErrorMessage(error, "获取快讯失败"));
+      if (page === 1) {
+        setTelegraphItems([]);
+      }
     }
     setTelegraphLoading(false);
   }, []);
@@ -83,18 +205,20 @@ export default function NewsPanel() {
     setGlobalLoading(true);
     try {
       // 后端 GlobalIndexResponse 字段为 indexes，字段包含 code/name/current/change_percent/change_amount/update_time
-      const data = await api.getGlobalIndexes();
+      const data = (await api.getGlobalIndexes()) as GlobalIndexesResponse;
       // 映射字段名到前端期望的格式
-      const indexes = (data?.indexes || []).map((item: any) => ({
-        code: item.code,
-        name: item.name,
-        price: item.current,
-        change: item.change_amount,
-        change_percent: item.change_percent,
+      const indexes: GlobalIndexItem[] = (data?.indexes || []).map((item) => ({
+        code: item.code || "",
+        name: item.name || "",
+        price: item.current ?? null,
+        change: item.change_amount ?? null,
+        change_percent: item.change_percent ?? null,
         update_time: item.update_time,
       }));
       setGlobalIndexes(indexes);
-    } catch { /* ignore */ }
+    } catch {
+      setGlobalIndexes([]);
+    }
     setGlobalLoading(false);
   }, []);
 
@@ -102,11 +226,11 @@ export default function NewsPanel() {
     setTvLoading(true);
     setTvError("");
     try {
-      const data = await api.getTradingViewNews(30);
-      setTvItems(data?.items || []);
-    } catch (e: any) {
+      const data = (await api.getTradingViewNews(30)) as TradingViewNewsResponse;
+      setTvItems(Array.isArray(data?.items) ? data.items : []);
+    } catch (error: unknown) {
       setTvItems([]);
-      setTvError(e?.message || "获取 TradingView 资讯失败");
+      setTvError(toErrorMessage(error, "获取 TradingView 资讯失败"));
     }
     setTvLoading(false);
   }, []);
@@ -130,13 +254,13 @@ export default function NewsPanel() {
     setLoading(true);
     setSearchError("");
     try {
-      const data = await api.searchNews(keyword, selectedEngine || undefined);
-      setResults(data.items || []);
-      setResolvedEngine(data.engine || "");
-    } catch (e: any) {
+      const data = (await api.searchNews(keyword, selectedEngine || undefined)) as NewsSearchResponse;
+      setResults(Array.isArray(data?.items) ? data.items : []);
+      setResolvedEngine(data?.engine || "");
+    } catch (error: unknown) {
       setResults([]);
       setResolvedEngine("");
-      setSearchError(e?.message || "搜索失败");
+      setSearchError(toErrorMessage(error, "搜索失败"));
     }
     setLoading(false);
   };
@@ -147,8 +271,8 @@ export default function NewsPanel() {
     fetchTelegraph(nextPage);
   };
 
-  const formatChange = (v: number | null | undefined) => v == null ? "-" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
-  const changeColor = (v: number | null | undefined) => v == null ? "text-gray-500" : v > 0 ? "text-red-600" : v < 0 ? "text-green-600" : "text-gray-500";
+  const formatChange = (v: number | null | undefined) => (v == null ? "-" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
+  const changeColor = (v: number | null | undefined) => (v == null ? "text-gray-500" : v > 0 ? "text-red-600" : v < 0 ? "text-green-600" : "text-gray-500");
 
   return (
     <div className="p-6">
@@ -351,7 +475,9 @@ export default function NewsPanel() {
                     </div>
                     <div className="text-right">
                       <div className={`text-xl font-bold font-mono ${changeColor(item.change_percent)}`}>
-                        {typeof item.price === "number" ? item.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : item.price || "-"}
+                        {typeof item.price === "number"
+                          ? item.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                          : "-"}
                       </div>
                     </div>
                   </div>
@@ -458,16 +584,16 @@ export default function NewsPanel() {
 
           {/* 搜索引擎状态 */}
           <div className="flex gap-4 mb-6">
-            {engines.map((e) => (
-              <div key={e.engine} className="flex items-center gap-2 text-sm text-gray-500">
-                <span className={`w-2 h-2 rounded-full ${e.enabled_keys > 0 ? "bg-green-500" : "bg-gray-300"}`} />
-                <span>{e.engine}</span>
-                <span className="text-gray-400">({e.enabled_keys} keys)</span>
+            {engines.map((engine) => (
+              <div key={engine.engine} className="flex items-center gap-2 text-sm text-gray-500">
+                <span className={`w-2 h-2 rounded-full ${engine.enabled_keys > 0 ? "bg-green-500" : "bg-gray-300"}`} />
+                <span>{engine.engine}</span>
+                <span className="text-gray-400">({engine.enabled_keys} keys)</span>
               </div>
             ))}
           </div>
 
-          {engines.length > 0 && engines.every((e) => (e.enabled_keys || 0) <= 0) && (
+          {engines.length > 0 && engines.every((engine) => (engine.enabled_keys || 0) <= 0) && (
             <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 text-sm">
               当前未配置可用的搜索引擎 Key，可能导致搜索结果为空。可在「设置 → 搜索引擎」查看状态，并通过接口添加 Key 后重试。
             </div>
@@ -498,7 +624,7 @@ export default function NewsPanel() {
                 </div>
               )}
               {results.map((item, i) => (
-                <a key={i} href={item.url} target="_blank" rel="noopener noreferrer" className="block bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow">
+                <a key={item.news_id || item.url || i} href={item.url || "#"} target="_blank" rel="noopener noreferrer" className="block bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow">
                   <h3 className="font-medium text-blue-600 hover:underline mb-2">{item.title}</h3>
                   <p className="text-sm text-gray-600 line-clamp-2">{item.content}</p>
                   <div className="flex gap-4 mt-2 text-xs text-gray-400">

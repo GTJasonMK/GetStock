@@ -24,6 +24,7 @@ from app.schemas.stock import (
     MinuteDataResponse,
     ChipDistributionResponse,
 )
+from app.schemas.decision import DecisionDashboardResponse
 from app.schemas.common import Response
 
 router = APIRouter()
@@ -60,6 +61,29 @@ async def get_stock_detail(
     detail = await service.get_stock_detail(stock_code)
 
     return Response(data=detail)
+
+
+@router.get("/{stock_code}/decision-dashboard", response_model=Response[DecisionDashboardResponse])
+async def get_stock_decision_dashboard(
+    stock_code: str,
+    days: int = Query(120, ge=60, le=500, description="用于技术分析的日K条数（>=60）"),
+    include_technical: bool = Query(True, description="是否附带技术分析明细"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取决策仪表盘（规则版：买卖点位+检查清单+风险点）"""
+    from app.services.decision_service import DecisionService
+
+    service = DecisionService(db)
+    try:
+        dashboard = await service.get_dashboard(
+            stock_code,
+            days=days,
+            include_technical=include_technical,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return Response(data=dashboard)
 
 
 # ============ Followed Stocks API ============

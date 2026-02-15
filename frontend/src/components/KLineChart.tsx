@@ -12,6 +12,47 @@ interface KLineChartProps {
 
 type IndicatorType = "volume" | "macd" | "rsi";
 type AdjustType = "qfq" | "hfq" | "none";
+type KLinePoint = {
+  date: string;
+  open: number;
+  close: number;
+  low: number;
+  high: number;
+  volume: number;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const toNumber = (value: unknown, fallback = 0): number => {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const normalizeKLinePoint = (value: unknown): KLinePoint | null => {
+  if (!isRecord(value)) return null;
+  const date = typeof value.date === "string" ? value.date : "";
+  if (!date) return null;
+  return {
+    date,
+    open: toNumber(value.open),
+    close: toNumber(value.close),
+    low: toNumber(value.low),
+    high: toNumber(value.high),
+    volume: toNumber(value.volume),
+  };
+};
+
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message) return error.message;
+  if (isRecord(error) && typeof error.message === "string") return error.message;
+  return fallback;
+};
+
+const isOverseaStockCode = (code: string): boolean => {
+  const v = (code || "").trim().toLowerCase();
+  return v.startsWith("hk") || v.startsWith("us");
+};
 
 export default function KLineChart({ code, initialPeriod = "day", height = 500 }: KLineChartProps) {
   const chartRef = useRef<HTMLDivElement>(null);
@@ -23,7 +64,15 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
   const [period, setPeriod] = useState(initialPeriod);
   const [adjust, setAdjust] = useState<AdjustType>("qfq");
   const [indicator, setIndicator] = useState<IndicatorType>("volume");
-  const [klineData, setKlineData] = useState<any[]>([]);
+  const [klineData, setKlineData] = useState<KLinePoint[]>([]);
+  const oversea = isOverseaStockCode(code);
+
+  // 港/美股：仅支持日/周/月K，避免用户点到 5min 等导致报错
+  useEffect(() => {
+    if (!oversea) return;
+    if (["day", "week", "month"].includes(period)) return;
+    setPeriod("day");
+  }, [oversea, period]);
 
   // 计算EMA
   const calculateEMA = useCallback((data: number[], period: number): number[] => {
@@ -70,7 +119,7 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
   }, []);
 
   // 计算MA均线
-  const calculateMA = useCallback((data: any[], dayCount: number): (number | string)[] => {
+  const calculateMA = useCallback((data: KLinePoint[], dayCount: number): (number | string)[] => {
     const result: (number | string)[] = [];
     for (let i = 0; i < data.length; i++) {
       if (i < dayCount - 1) {
@@ -99,12 +148,16 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
           setKlineData([]);
           setError(data?.reason || "K线数据暂不可用");
         } else {
-          const list = data?.data || [];
+          const list = Array.isArray(data?.data)
+            ? data.data
+                .map((item) => normalizeKLinePoint(item))
+                .filter((item): item is KLinePoint => item !== null)
+            : [];
           setKlineData(list);
-          if (Array.isArray(list) && list.length === 0) setNotice("暂无K线数据");
+          if (list.length === 0) setNotice("暂无K线数据");
         }
-      } catch (e: any) {
-        setError(e.message || "加载K线数据失败");
+      } catch (errorObject: unknown) {
+        setError(getErrorMessage(errorObject, "加载K线数据失败"));
         setKlineData([]);
       } finally {
         setLoading(false);
@@ -121,10 +174,10 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
       chartInstance.current = echarts.init(chartRef.current);
     }
 
-    const dates = klineData.map((item: any) => item.date);
-    const ohlc = klineData.map((item: any) => [item.open, item.close, item.low, item.high]);
-    const volumes = klineData.map((item: any) => item.volume);
-    const closes = klineData.map((item: any) => item.close);
+    const dates = klineData.map((item) => item.date);
+    const ohlc = klineData.map((item) => [item.open, item.close, item.low, item.high]);
+    const volumes = klineData.map((item) => item.volume);
+    const closes = klineData.map((item) => item.close);
 
     // 计算指标
     const { dif, dea, macd } = calculateMACD(closes);
@@ -299,7 +352,9 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
       // RSI参考线
       yAxes[1].min = 0;
       yAxes[1].max = 100;
-      (yAxes[1] as any).splitNumber = 4;
+      if ("splitNumber" in yAxes[1]) {
+        yAxes[1].splitNumber = 4;
+      }
     }
 
     // 图例
@@ -317,9 +372,13 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
         borderColor: "#ccc",
         borderWidth: 1,
         textStyle: { color: "#333" },
-        formatter: (params: any) => {
-          const idx = params[0]?.dataIndex;
-          if (idx === undefined || idx < 0 || idx >= klineData.length) return "";
+        formatter: (params: unknown) => {
+          const firstParam = Array.isArray(params) ? params[0] : params;
+          const idx =
+            firstParam && typeof firstParam === "object" && "dataIndex" in firstParam
+              ? Number((firstParam as { dataIndex?: unknown }).dataIndex)
+              : -1;
+          if (!Number.isInteger(idx) || idx < 0 || idx >= klineData.length) return "";
           const item = klineData[idx];
           if (!item) return "";
           const chg = ((item.close - item.open) / item.open * 100).toFixed(2);
@@ -384,15 +443,22 @@ export default function KLineChart({ code, initialPeriod = "day", height = 500 }
           {source && <span className="text-xs text-gray-400">来源：{source}</span>}
           {/* 周期切换 */}
           <div className="flex flex-wrap gap-1 text-sm">
-            {[
-              { key: "day", label: "日K" },
-              { key: "week", label: "周K" },
-              { key: "month", label: "月K" },
-              { key: "5min", label: "5m" },
-              { key: "15min", label: "15m" },
-              { key: "30min", label: "30m" },
-              { key: "60min", label: "60m" },
-            ].map((p) => (
+            {(oversea
+              ? [
+                  { key: "day", label: "日K" },
+                  { key: "week", label: "周K" },
+                  { key: "month", label: "月K" },
+                ]
+              : [
+                  { key: "day", label: "日K" },
+                  { key: "week", label: "周K" },
+                  { key: "month", label: "月K" },
+                  { key: "5min", label: "5m" },
+                  { key: "15min", label: "15m" },
+                  { key: "30min", label: "30m" },
+                  { key: "60min", label: "60m" },
+                ]
+            ).map((p) => (
               <button
                 key={p.key}
                 type="button"

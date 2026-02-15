@@ -24,15 +24,27 @@ function formatMoneyYuan(v: number | null | undefined) {
 }
 
 function colorByChange(v: number | null | undefined) {
-  if (typeof v !== "number" || !Number.isFinite(v)) return "#e5e7eb"; // gray-200
-  if (v >= 5) return "#b91c1c"; // red-700
-  if (v >= 2) return "#ef4444"; // red-500
-  if (v > 0) return "#fca5a5"; // red-300
-  if (v <= -5) return "#15803d"; // green-700
-  if (v <= -2) return "#22c55e"; // green-500
-  if (v < 0) return "#86efac"; // green-300
+  if (typeof v !== "number" || !Number.isFinite(v)) return "#e5e7eb";
+  if (v >= 5) return "#b91c1c";
+  if (v >= 2) return "#ef4444";
+  if (v > 0) return "#fca5a5";
+  if (v <= -5) return "#15803d";
+  if (v <= -2) return "#22c55e";
+  if (v < 0) return "#86efac";
   return "#e5e7eb";
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const toFiniteNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+const getNodeData = (params: unknown): Record<string, unknown> => {
+  const first = Array.isArray(params) ? params[0] : params;
+  if (!isRecord(first) || !isRecord(first.data)) return {};
+  return first.data;
+};
 
 export default function BoardMoneyHeatmap({
   title,
@@ -67,9 +79,10 @@ export default function BoardMoneyHeatmap({
         color: "#0f172a",
         fontSize: 12,
         overflow: "truncate" as const,
-        formatter: (p: any) => {
-          const chg = p?.data?.change_percent;
-          const nm = p?.name || "";
+        formatter: (params: unknown) => {
+          const node = getNodeData(params);
+          const chg = toFiniteNumber(node.change_percent);
+          const nm = typeof node.name === "string" ? node.name : "";
           return `${nm}\n${formatChange(chg)}`;
         },
       },
@@ -82,13 +95,13 @@ export default function BoardMoneyHeatmap({
       borderColor: "#e5e7eb",
       backgroundColor: "rgba(255,255,255,0.95)",
       textStyle: { color: "#0f172a", fontSize: 12 },
-      formatter: (info: any) => {
-        const d = info?.data || {};
-        const name = String(d.name || "");
-        const code = String(d.bk_code || "");
-        const chg = d.change_percent as number | undefined;
-        const inflow = d.main_net_inflow as number | undefined;
-        const pct = d.main_net_inflow_percent as number | null | undefined;
+      formatter: (info: unknown) => {
+        const d = getNodeData(info);
+        const name = typeof d.name === "string" ? d.name : "";
+        const code = typeof d.bk_code === "string" ? d.bk_code : "";
+        const chg = toFiniteNumber(d.change_percent);
+        const inflow = toFiniteNumber(d.main_net_inflow);
+        const pct = toFiniteNumber(d.main_net_inflow_percent);
         const lines = [
           `<div style="font-weight:600;margin-bottom:6px;">${name}${code ? `（${code}）` : ""}</div>`,
           `<div>涨跌幅：<span style="font-family:ui-monospace">${formatChange(chg)}</span></div>`,
@@ -135,4 +148,3 @@ export default function BoardMoneyHeatmap({
     </div>
   );
 }
-

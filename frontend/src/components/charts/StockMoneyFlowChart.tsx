@@ -26,6 +26,11 @@ function toYi(v: number) {
   if (!Number.isFinite(v)) return 0;
   return v / 1e8;
 }
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 
 export default function StockMoneyFlowChart({ code, days = 60, height = 360 }: { code: string; days?: number; height?: number }) {
   const [loading, setLoading] = useState(true);
@@ -41,10 +46,10 @@ export default function StockMoneyFlowChart({ code, days = 60, height = 360 }: {
         const data = await api.getStockMoneyFlowHistory(code, days);
         if (cancelled) return;
         setRows(Array.isArray(data) ? data : []);
-      } catch (e: any) {
+      } catch (errorObject: unknown) {
         if (cancelled) return;
         setRows([]);
-        setError(e?.message || "加载资金流向失败");
+        setError(getErrorMessage(errorObject, "加载资金流向失败"));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -76,9 +81,13 @@ export default function StockMoneyFlowChart({ code, days = 60, height = 360 }: {
         borderColor: "#e5e7eb",
         borderWidth: 1,
         textStyle: { color: "#0f172a", fontSize: 12 },
-        formatter: (params: any) => {
-          const idx = params?.[0]?.dataIndex ?? -1;
-          if (idx < 0 || idx >= ordered.length) return "";
+        formatter: (params: unknown) => {
+          const firstParam = Array.isArray(params) ? params[0] : params;
+          const idx =
+            firstParam && typeof firstParam === "object" && "dataIndex" in firstParam
+              ? Number((firstParam as { dataIndex?: unknown }).dataIndex)
+              : -1;
+          if (!Number.isInteger(idx) || idx < 0 || idx >= ordered.length) return "";
           const item = ordered[idx];
           const inflow = inflowYi[idx];
           const close = closes[idx];

@@ -25,6 +25,11 @@ function toNumber(v: unknown, fallback = 0) {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 
 export default function StockMinuteChart({ code, height = 360 }: { code: string; height?: number }) {
   const [loading, setLoading] = useState(true);
@@ -40,10 +45,10 @@ export default function StockMinuteChart({ code, height = 360 }: { code: string;
         const data = await api.getMinuteData(code);
         if (cancelled) return;
         setPayload(data || null);
-      } catch (e: any) {
+      } catch (errorObject: unknown) {
         if (cancelled) return;
         setPayload(null);
-        setError(e?.message || "加载分时数据失败");
+        setError(getErrorMessage(errorObject, "加载分时数据失败"));
       } finally {
         if (!cancelled) setLoading(false);
       }

@@ -12,6 +12,35 @@ export interface MarketTreemapItem {
   industry?: string;
 }
 
+type TreemapLeafNode = {
+  name: string;
+  value: number;
+  stock_code: string;
+  stock_name: string;
+  industry: string;
+  change_percent: number;
+  amount: number | null;
+  total_market_cap: number | null;
+  itemStyle: {
+    color: string;
+    borderColor: string;
+    borderWidth: number;
+    gapWidth: number;
+  };
+  label: {
+    show: boolean;
+    color: string;
+    fontSize: number;
+    overflow: "truncate";
+    formatter: (params: unknown) => string;
+  };
+};
+
+type IndustryNode = {
+  name: string;
+  children: TreemapLeafNode[];
+};
+
 function formatChange(v: number | null | undefined) {
   if (typeof v !== "number" || !Number.isFinite(v)) return "-";
   return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
@@ -25,15 +54,27 @@ function formatMoneyYuan(v: number | null | undefined) {
 }
 
 function colorByChange(v: number | null | undefined) {
-  if (typeof v !== "number" || !Number.isFinite(v)) return "#e5e7eb"; // gray-200
-  if (v >= 7) return "#991b1b"; // red-800
-  if (v >= 3) return "#ef4444"; // red-500
-  if (v > 0) return "#fca5a5"; // red-300
-  if (v <= -7) return "#166534"; // green-800
-  if (v <= -3) return "#22c55e"; // green-500
-  if (v < 0) return "#86efac"; // green-300
+  if (typeof v !== "number" || !Number.isFinite(v)) return "#e5e7eb";
+  if (v >= 7) return "#991b1b";
+  if (v >= 3) return "#ef4444";
+  if (v > 0) return "#fca5a5";
+  if (v <= -7) return "#166534";
+  if (v <= -3) return "#22c55e";
+  if (v < 0) return "#86efac";
   return "#e5e7eb";
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const toFiniteNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+const getNodeData = (params: unknown): Record<string, unknown> => {
+  const first = Array.isArray(params) ? params[0] : params;
+  if (!isRecord(first) || !isRecord(first.data)) return {};
+  return first.data;
+};
 
 export default function MarketTreemap({
   title,
@@ -49,38 +90,37 @@ export default function MarketTreemap({
   const rows = (items || []).filter((x) => x && String(x.stock_code || "").trim());
 
   const grouped = new Map<string, MarketTreemapItem[]>();
-  for (const r of rows) {
-    const key = String(r.industry || "").trim() || "其他";
+  for (const row of rows) {
+    const key = String(row.industry || "").trim() || "其他";
     if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(r);
+    grouped.get(key)!.push(row);
   }
 
-  // 行业内按 sizeBy 取前 N，避免 treemap 过密导致可读性差
-  const MAX_PER_GROUP = 25;
-  const toSize = (r: MarketTreemapItem) => {
-    const raw = sizeBy === "amount" ? r.amount : r.total_market_cap;
+  const maxPerGroup = 25;
+  const toSize = (item: MarketTreemapItem) => {
+    const raw = sizeBy === "amount" ? item.amount : item.total_market_cap;
     return typeof raw === "number" && Number.isFinite(raw) ? Math.abs(raw) : 0;
   };
 
-  const seriesData = Array.from(grouped.entries())
+  const seriesData: IndustryNode[] = Array.from(grouped.entries())
     .map(([industry, list]) => {
-      const children = [...list]
+      const children: TreemapLeafNode[] = [...list]
         .sort((a, b) => toSize(b) - toSize(a))
-        .slice(0, MAX_PER_GROUP)
-        .map((s) => {
-          const size = Math.max(1, toSize(s));
-          const chg = typeof s.change_percent === "number" ? s.change_percent : 0;
+        .slice(0, maxPerGroup)
+        .map((stock) => {
+          const size = Math.max(1, toSize(stock));
+          const change = typeof stock.change_percent === "number" ? stock.change_percent : 0;
           return {
-            name: s.stock_name || s.stock_code,
+            name: stock.stock_name || stock.stock_code,
             value: size,
-            stock_code: s.stock_code,
-            stock_name: s.stock_name,
+            stock_code: stock.stock_code,
+            stock_name: stock.stock_name,
             industry,
-            change_percent: chg,
-            amount: typeof s.amount === "number" ? s.amount : null,
-            total_market_cap: typeof s.total_market_cap === "number" ? s.total_market_cap : null,
+            change_percent: change,
+            amount: typeof stock.amount === "number" ? stock.amount : null,
+            total_market_cap: typeof stock.total_market_cap === "number" ? stock.total_market_cap : null,
             itemStyle: {
-              color: colorByChange(chg),
+              color: colorByChange(change),
               borderColor: "#ffffff",
               borderWidth: 1,
               gapWidth: 1,
@@ -89,23 +129,21 @@ export default function MarketTreemap({
               show: true,
               color: "#0f172a",
               fontSize: 11,
-              overflow: "truncate" as const,
-              formatter: (p: any) => {
-                const nm = p?.name || "";
-                const pct = p?.data?.change_percent;
-                return `${nm}\n${formatChange(pct)}`;
+              overflow: "truncate",
+              formatter: (params: unknown) => {
+                const node = getNodeData(params);
+                const name = typeof node.name === "string" ? node.name : "";
+                const pct = toFiniteNumber(node.change_percent);
+                return `${name}\n${formatChange(pct)}`;
               },
             },
           };
         });
 
-      return {
-        name: industry,
-        children,
-      };
+      return { name: industry, children };
     })
-    .filter((x) => (x.children || []).length > 0)
-    .sort((a: any, b: any) => (b.children?.length || 0) - (a.children?.length || 0));
+    .filter((node) => node.children.length > 0)
+    .sort((a, b) => b.children.length - a.children.length);
 
   const option: EChartsOption = {
     tooltip: {
@@ -113,20 +151,20 @@ export default function MarketTreemap({
       borderColor: "#e5e7eb",
       backgroundColor: "rgba(255,255,255,0.95)",
       textStyle: { color: "#0f172a", fontSize: 12 },
-      formatter: (info: any) => {
-        const d = info?.data || {};
-        const name = String(d.stock_name || d.name || "");
-        const code = String(d.stock_code || "");
-        const industry = String(d.industry || "");
-        const chg = d.change_percent as number | undefined;
-        const amount = d.amount as number | undefined;
-        const mc = d.total_market_cap as number | undefined;
+      formatter: (info: unknown) => {
+        const d = getNodeData(info);
+        const name = typeof d.stock_name === "string" ? d.stock_name : typeof d.name === "string" ? d.name : "";
+        const code = typeof d.stock_code === "string" ? d.stock_code : "";
+        const industry = typeof d.industry === "string" ? d.industry : "";
+        const change = toFiniteNumber(d.change_percent);
+        const amount = toFiniteNumber(d.amount);
+        const marketCap = toFiniteNumber(d.total_market_cap);
         const lines = [
           `<div style="font-weight:600;margin-bottom:6px;">${name}${code ? `（${code}）` : ""}</div>`,
           industry ? `<div>行业：${industry}</div>` : "",
-          `<div>涨跌幅：<span style="font-family:ui-monospace">${formatChange(chg)}</span></div>`,
+          `<div>涨跌幅：<span style="font-family:ui-monospace">${formatChange(change)}</span></div>`,
           `<div>成交额：<span style="font-family:ui-monospace">${formatMoneyYuan(amount)}</span></div>`,
-          `<div>总市值：<span style="font-family:ui-monospace">${formatMoneyYuan(mc)}</span></div>`,
+          `<div>总市值：<span style="font-family:ui-monospace">${formatMoneyYuan(marketCap)}</span></div>`,
         ].filter(Boolean);
         return `<div style="padding:8px 10px;">${lines.join("")}</div>`;
       },
@@ -162,7 +200,7 @@ export default function MarketTreemap({
             itemStyle: { borderColor: "#ffffff", borderWidth: 1, gapWidth: 1 },
           },
         ],
-        data: seriesData as any,
+        data: seriesData,
       },
     ],
   };
@@ -180,4 +218,3 @@ export default function MarketTreemap({
     </div>
   );
 }
-

@@ -33,14 +33,23 @@ class StockService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        self._datasource_manager = None
+        self._datasource_manager_lock = asyncio.Lock()
 
     async def _get_datasource_manager(self):
         """获取数据源管理器（按 DB 配置初始化）。"""
         from app.datasources.manager import get_datasource_manager
 
-        manager = get_datasource_manager()
-        await manager.initialize(self.db)
-        return manager
+        if self._datasource_manager is not None:
+            return self._datasource_manager
+
+        async with self._datasource_manager_lock:
+            if self._datasource_manager is None:
+                manager = get_datasource_manager()
+                await manager.initialize(self.db)
+                self._datasource_manager = manager
+
+        return self._datasource_manager
 
     async def get_stock_info(self, stock_code: str) -> Dict[str, Any]:
         """
@@ -234,8 +243,9 @@ class StockService:
 
         try:
             return await manager.get_realtime_quotes(codes)
-        except Exception:
+        except Exception as e:
             # 与旧实现保持一致：取不到数据时返回空列表，避免接口直接 500
+            logger.warning(f"获取实时行情失败，返回空列表: {e}")
             return []
 
     @cached(ttl_seconds=CacheTTL.KLINE, prefix="kline")

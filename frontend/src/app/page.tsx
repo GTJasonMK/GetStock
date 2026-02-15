@@ -80,7 +80,7 @@ export default function App() {
     if (prefetchedRef.current.has(key)) return;
     prefetchedRef.current.add(key);
 
-    const safe = (p: Promise<any>) => p.catch(() => {});
+    const safe = (p: Promise<unknown>) => p.catch(() => {});
     if (key === "stocks") {
       safe(api.getGroups());
       safe(api.getFollowedStocks());

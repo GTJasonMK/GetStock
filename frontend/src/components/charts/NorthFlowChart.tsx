@@ -56,9 +56,13 @@ export default function NorthFlowChart({
       borderColor: "#e5e7eb",
       borderWidth: 1,
       textStyle: { color: "#0f172a", fontSize: 12 },
-      formatter: (params: any) => {
-        const idx = params?.[0]?.dataIndex ?? -1;
-        if (idx < 0 || idx >= rows.length) return "";
+      formatter: (params: unknown) => {
+        const firstParam = Array.isArray(params) ? params[0] : params;
+        const idx =
+          firstParam && typeof firstParam === "object" && "dataIndex" in firstParam
+            ? Number((firstParam as { dataIndex?: unknown }).dataIndex)
+            : -1;
+        if (!Number.isInteger(idx) || idx < 0 || idx >= rows.length) return "";
         const r = rows[idx];
         const label = metric || "净买额";
         return `
@@ -107,7 +111,7 @@ export default function NorthFlowChart({
         type: "bar",
         data: sh,
         barWidth: "35%",
-        itemStyle: { color: (p: any) => (Number(p?.value) >= 0 ? "#ef4444" : "#22c55e") },
+        itemStyle: { color: (p) => (Number(p?.value) >= 0 ? "#ef4444" : "#22c55e") },
         emphasis: { focus: "series" },
         stack: "north",
       },
@@ -116,7 +120,7 @@ export default function NorthFlowChart({
         type: "bar",
         data: sz,
         barWidth: "35%",
-        itemStyle: { color: (p: any) => (Number(p?.value) >= 0 ? "#f97316" : "#16a34a") },
+        itemStyle: { color: (p) => (Number(p?.value) >= 0 ? "#f97316" : "#16a34a") },
         emphasis: { focus: "series" },
         stack: "north",
       },

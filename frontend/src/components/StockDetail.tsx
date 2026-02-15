@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import api from "@/lib/api";
+import StockDecisionTab from "@/components/StockDecisionTab";
 
 interface StockDetailProps {
   code: string;
@@ -9,17 +10,126 @@ interface StockDetailProps {
 }
 
 // Tab 类型
-type DetailTab = "overview" | "fundamental" | "rating" | "shareholders" | "dividend" | "moneyflow";
+type DetailTab = "overview" | "decision" | "fundamental" | "rating" | "shareholders" | "dividend" | "moneyflow";
+
+type StockDetailQuote = {
+  stock_name?: string;
+  current_price?: number;
+  change_percent?: number;
+  open_price?: number;
+  high_price?: number;
+  low_price?: number;
+  prev_close?: number;
+  volume?: number;
+  amount?: number;
+};
+
+type StockConcept = {
+  concept_name?: string;
+  name?: string;
+};
+
+type StockFundamental = {
+  turnover_rate?: number;
+  volume_ratio?: number;
+  pe_dynamic?: number;
+  pe_ttm?: number;
+  pe_static?: number;
+  pb?: number;
+  roe?: number;
+  total_market_cap?: number;
+  float_market_cap?: number;
+  industry?: string;
+  eps?: number;
+  bvps?: number;
+  profit_yoy?: number;
+  revenue_yoy?: number;
+};
+
+type FinancialIncomeItem = {
+  report_date?: string;
+  total_revenue?: number;
+  net_profit?: number;
+  basic_eps?: number;
+};
+
+type StockFinancial = {
+  income?: FinancialIncomeItem[];
+};
+
+type StockRatingOverview = {
+  rating_count?: number;
+  consensus_target_price?: number;
+  max_target_price?: number;
+  min_target_price?: number;
+};
+
+type StockDetailData = {
+  quote?: StockDetailQuote;
+  basic?: { name?: string };
+  concepts?: StockConcept[];
+  rating?: StockRatingOverview;
+  fundamental?: StockFundamental;
+  financial?: StockFinancial;
+};
+
+type RatingReport = {
+  title?: string;
+  org_name?: string;
+  author?: string;
+  publish_date?: string;
+  rating?: string;
+  target_price?: number;
+};
+
+type StockRating = {
+  ratings?: Record<string, number>;
+  consensus_target_price?: number;
+  max_target_price?: number;
+  min_target_price?: number;
+  reports?: RatingReport[];
+};
+
+type ShareholderItem = {
+  end_date?: string;
+  holder_num?: number;
+  holder_num_change_pct?: number;
+  avg_hold_amount?: number;
+};
+
+type TopHolderItem = {
+  holder_name?: string;
+  hold_num?: number;
+  hold_ratio?: number;
+  change?: number;
+};
+
+type DividendItem = {
+  report_date?: string;
+  plan?: string;
+  ex_dividend_date?: string;
+  progress?: string;
+};
+
+type MoneyFlowItem = {
+  date?: string;
+  main_net_inflow?: number;
+  main_net_inflow_pct?: number;
+  super_large_net_inflow?: number;
+  large_net_inflow?: number;
+  close?: number;
+  change_percent?: number;
+};
 
 export default function StockDetail({ code, onRemove }: StockDetailProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("overview");
   const [loading, setLoading] = useState(true);
-  const [detail, setDetail] = useState<any>(null);
-  const [rating, setRating] = useState<any>(null);
-  const [shareholders, setShareholders] = useState<any[]>([]);
-  const [topHolders, setTopHolders] = useState<any[]>([]);
-  const [dividend, setDividend] = useState<any[]>([]);
-  const [moneyFlow, setMoneyFlow] = useState<any[]>([]);
+  const [detail, setDetail] = useState<StockDetailData | null>(null);
+  const [rating, setRating] = useState<StockRating | null>(null);
+  const [shareholders, setShareholders] = useState<ShareholderItem[]>([]);
+  const [topHolders, setTopHolders] = useState<TopHolderItem[]>([]);
+  const [dividend, setDividend] = useState<DividendItem[]>([]);
+  const [moneyFlow, setMoneyFlow] = useState<MoneyFlowItem[]>([]);
 
   type TabMeta = {
     loaded: boolean;
@@ -29,6 +139,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
 
   const [tabMeta, setTabMeta] = useState<Record<DetailTab, TabMeta>>({
     overview: { loaded: true, loading: false, error: null },
+    decision: { loaded: true, loading: false, error: null },
     fundamental: { loaded: true, loading: false, error: null },
     rating: { loaded: false, loading: false, error: null },
     shareholders: { loaded: false, loading: false, error: null },
@@ -82,9 +193,9 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
       start();
       api
         .getStockRating(code)
-        .then((v) => setRating(v))
+        .then((v) => setRating(v as StockRating))
         .then(() => doneOk())
-        .catch((e: any) => {
+        .catch((e: unknown) => {
           setRating(null);
           doneErr(e instanceof Error ? e.message : String(e || "获取机构评级失败"));
         });
@@ -95,11 +206,11 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
       start();
       Promise.all([api.getStockShareholders(code), api.getStockTopHolders(code, "float")])
         .then(([sh, holders]) => {
-          setShareholders(Array.isArray(sh) ? sh : []);
-          setTopHolders(Array.isArray(holders) ? holders : []);
+          setShareholders(Array.isArray(sh) ? (sh as ShareholderItem[]) : []);
+          setTopHolders(Array.isArray(holders) ? (holders as TopHolderItem[]) : []);
         })
         .then(() => doneOk())
-        .catch((e: any) => {
+        .catch((e: unknown) => {
           setShareholders([]);
           setTopHolders([]);
           doneErr(e instanceof Error ? e.message : String(e || "获取股东信息失败"));
@@ -111,9 +222,9 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
       start();
       api
         .getStockDividend(code)
-        .then((v) => setDividend(Array.isArray(v) ? v : []))
+        .then((v) => setDividend(Array.isArray(v) ? (v as DividendItem[]) : []))
         .then(() => doneOk())
-        .catch((e: any) => {
+        .catch((e: unknown) => {
           setDividend([]);
           doneErr(e instanceof Error ? e.message : String(e || "获取分红送转失败"));
         });
@@ -124,9 +235,9 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
       start();
       api
         .getStockMoneyFlowHistory(code, 30)
-        .then((v) => setMoneyFlow(Array.isArray(v) ? v : []))
+        .then((v) => setMoneyFlow(Array.isArray(v) ? (v as MoneyFlowItem[]) : []))
         .then(() => doneOk())
-        .catch((e: any) => {
+        .catch((e: unknown) => {
           setMoneyFlow([]);
           doneErr(e instanceof Error ? e.message : String(e || "获取资金流向失败"));
         });
@@ -188,6 +299,10 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
   const quote = detail.quote;
   const fundamental = detail.fundamental;
   const financial = detail.financial;
+  const concepts = detail.concepts ?? [];
+  const detailRating = detail.rating;
+  const incomeList = financial?.income ?? [];
+  const ratingReports = rating?.reports ?? [];
 
   return (
     <div className="h-full flex flex-col">
@@ -218,6 +333,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
       <div className="flex gap-1 mb-4 bg-gray-100 rounded-lg p-1 w-fit">
         {[
           { key: "overview", label: "概览" },
+          { key: "decision", label: "决策仪表盘" },
           { key: "fundamental", label: "估值指标" },
           { key: "rating", label: "机构评级" },
           { key: "shareholders", label: "股东信息" },
@@ -255,11 +371,11 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
             </div>
 
             {/* 概念板块 */}
-            {detail.concepts?.length > 0 && (
+            {concepts.length > 0 && (
               <div className="bg-white rounded-xl p-4 shadow-sm">
                 <h3 className="font-medium mb-3">所属概念</h3>
                 <div className="flex flex-wrap gap-2">
-                  {detail.concepts.slice(0, 10).map((c: any, i: number) => (
+                  {concepts.slice(0, 10).map((c: StockConcept, i: number) => (
                     <span key={i} className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm">
                       {c.concept_name || c.name}
                     </span>
@@ -269,32 +385,40 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
             )}
 
             {/* 评级摘要 */}
-            {detail.rating?.rating_count > 0 && (
+            {(detailRating?.rating_count ?? 0) > 0 && (
               <div className="bg-white rounded-xl p-4 shadow-sm">
                 <h3 className="font-medium mb-3">机构评级概览</h3>
                 <div className="grid grid-cols-4 gap-4">
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-blue-600">{detail.rating.rating_count}</div>
+                    <div className="text-2xl font-bold text-blue-600">{detailRating?.rating_count ?? 0}</div>
                     <div className="text-xs text-gray-500">评级数量</div>
                   </div>
                   <div className="text-center">
                     <div className="text-2xl font-bold text-red-600">
-                      {formatFixed(detail.rating.consensus_target_price)}
+                      {formatFixed(detailRating?.consensus_target_price)}
                     </div>
                     <div className="text-xs text-gray-500">一致目标价</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-lg font-medium">{formatFixed(detail.rating.max_target_price)}</div>
+                    <div className="text-lg font-medium">{formatFixed(detailRating?.max_target_price)}</div>
                     <div className="text-xs text-gray-500">最高目标价</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-lg font-medium">{formatFixed(detail.rating.min_target_price)}</div>
+                    <div className="text-lg font-medium">{formatFixed(detailRating?.min_target_price)}</div>
                     <div className="text-xs text-gray-500">最低目标价</div>
                   </div>
                 </div>
               </div>
             )}
           </div>
+        )}
+
+        {/* 决策仪表盘 */}
+        {activeTab === "decision" && (
+          <StockDecisionTab
+            code={code}
+            stockName={quote?.stock_name || detail.basic?.name || code}
+          />
         )}
 
         {/* 估值指标 */}
@@ -339,7 +463,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
             </div>
 
             {/* 财务报表 */}
-            {financial?.income?.length > 0 && (
+            {incomeList.length > 0 && (
               <div className="bg-white rounded-xl p-4 shadow-sm">
                 <h3 className="font-medium mb-3">财务摘要</h3>
                 <table className="w-full text-sm">
@@ -352,7 +476,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {financial.income.slice(0, 4).map((item: any, i: number) => (
+                    {incomeList.slice(0, 4).map((item: FinancialIncomeItem, i: number) => (
                       <tr key={i} className="border-t">
                         <td className="py-2">{item.report_date}</td>
                         <td className="text-right">{formatMoney(item.total_revenue)}</td>
@@ -393,11 +517,11 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
                 </div>
 
                 {/* 研报列表 */}
-                {rating.reports?.length > 0 && (
+                {ratingReports.length > 0 && (
                   <div className="bg-white rounded-xl p-4 shadow-sm">
                     <h3 className="font-medium mb-3">最新研报</h3>
                     <div className="space-y-3">
-                      {rating.reports.slice(0, 10).map((r: any, i: number) => (
+                      {ratingReports.slice(0, 10).map((r: RatingReport, i: number) => (
                         <div key={i} className="flex items-start justify-between py-2 border-b last:border-0">
                           <div className="flex-1">
                             <div className="text-sm font-medium line-clamp-1">{r.title}</div>
@@ -461,7 +585,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {shareholders.map((item: any, i: number) => (
+                    {shareholders.map((item: ShareholderItem, i: number) => (
                       <tr key={i} className="border-t">
                         <td className="py-2">{item.end_date}</td>
                         <td className="text-right">{item.holder_num?.toLocaleString() || "-"}</td>
@@ -490,7 +614,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {topHolders.map((item: any, i: number) => (
+                    {topHolders.map((item: TopHolderItem, i: number) => (
                       <tr key={i} className="border-t">
                         <td className="py-2">{item.holder_name}</td>
                         <td className="text-right">{formatMoney(item.hold_num)}</td>
@@ -549,7 +673,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {dividend.map((item: any, i: number) => (
+                    {dividend.map((item: DividendItem, i: number) => (
                       <tr key={i} className="border-t">
                         <td className="py-2">{item.report_date}</td>
                         <td className="py-2 max-w-xs truncate">{item.plan || "-"}</td>
@@ -613,7 +737,7 @@ export default function StockDetail({ code, onRemove }: StockDetailProps) {
                       </tr>
                     </thead>
                     <tbody>
-                      {moneyFlow.slice(0, 20).map((item: any, i: number) => (
+                      {moneyFlow.slice(0, 20).map((item: MoneyFlowItem, i: number) => (
                         <tr key={i} className="border-t">
                           <td className="py-2">{item.date}</td>
                           <td className={`text-right ${changeColor(item.main_net_inflow)}`}>

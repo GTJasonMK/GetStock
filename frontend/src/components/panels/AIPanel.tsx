@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import api from "@/lib/api";
 
+type PanelMode = "chat" | "analysis";
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -17,14 +19,60 @@ interface HistoryItem {
   created_at: string;
 }
 
+interface AIConfig {
+  id: number;
+  name: string;
+  enabled: boolean;
+}
+
+function toErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  return fallback;
+}
+
+function normalizeAIConfig(raw: unknown): AIConfig | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const id = Number(obj.id);
+  if (!Number.isFinite(id) || id <= 0) return null;
+
+  const nameRaw = obj.name;
+  const enabledRaw = obj.enabled;
+  return {
+    id,
+    name: typeof nameRaw === "string" && nameRaw.trim() ? nameRaw : `模型#${id}`,
+    enabled: enabledRaw === undefined ? true : Boolean(enabledRaw),
+  };
+}
+
+function normalizeHistoryItem(raw: unknown): HistoryItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const id = Number(obj.id);
+  const question = typeof obj.question === "string" ? obj.question : "";
+  const response = typeof obj.response === "string" ? obj.response : "";
+  const modelName = typeof obj.model_name === "string" ? obj.model_name : "AI";
+  const createdAt = typeof obj.created_at === "string" ? obj.created_at : "";
+  if (!Number.isFinite(id) || !question || !response) return null;
+
+  return {
+    id,
+    question,
+    response,
+    model_name: modelName,
+    created_at: createdAt,
+  };
+}
+
 export default function AIPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState("");
-  const [mode, setMode] = useState<"chat" | "analysis">("chat");
+  const [mode, setMode] = useState<PanelMode>("chat");
   const [selectedModel, setSelectedModel] = useState<number | undefined>(undefined);
-  const [aiConfigs, setAIConfigs] = useState<any[]>([]);
+  const [aiConfigs, setAIConfigs] = useState<AIConfig[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [enableRetrieval, setEnableRetrieval] = useState(true);
 
@@ -35,21 +83,40 @@ export default function AIPanel() {
   // 获取AI配置和历史 - 移除selectedModel依赖避免无限循环
   const fetchData = useCallback(async () => {
     try {
-      const [configs, historyData] = await Promise.all([
+      const [rawConfigs, historyData] = await Promise.all([
         api.getAIConfigs().catch(() => []),
         api.getAIHistory(20).catch(() => ({ items: [] })),
       ]);
-      setAIConfigs(configs || []);
-      setHistory(historyData?.items || []);
+
+      const normalizedConfigs = (Array.isArray(rawConfigs) ? rawConfigs : [])
+        .map(normalizeAIConfig)
+        .filter((item): item is AIConfig => item !== null);
+
+      const historyRaw =
+        historyData &&
+        typeof historyData === "object" &&
+        Array.isArray((historyData as { items?: unknown[] }).items)
+          ? (historyData as { items: unknown[] }).items
+          : [];
+
+      const normalizedHistory = historyRaw
+        .map(normalizeHistoryItem)
+        .filter((item): item is HistoryItem => item !== null);
+
+      setAIConfigs(normalizedConfigs);
+      setHistory(normalizedHistory);
+
       // 仅在首次加载时设置默认模型
       if (!initializedRef.current) {
-        const enabledConfig = (configs || []).find((c: any) => c.enabled);
+        const enabledConfig = normalizedConfigs.find((config) => config.enabled);
         if (enabledConfig) {
           setSelectedModel(enabledConfig.id);
         }
         initializedRef.current = true;
       }
-    } catch { /* ignore */ }
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
@@ -64,8 +131,21 @@ export default function AIPanel() {
   const refreshHistory = async () => {
     try {
       const historyData = await api.getAIHistory(20);
-      setHistory(historyData?.items || []);
-    } catch { /* ignore */ }
+      const historyRaw =
+        historyData &&
+        typeof historyData === "object" &&
+        Array.isArray((historyData as { items?: unknown[] }).items)
+          ? (historyData as { items: unknown[] }).items
+          : [];
+
+      setHistory(
+        historyRaw
+          .map(normalizeHistoryItem)
+          .filter((item): item is HistoryItem => item !== null)
+      );
+    } catch {
+      // ignore
+    }
   };
 
   const handleSend = async () => {
@@ -103,8 +183,8 @@ export default function AIPanel() {
         setStreaming("");
       }
       refreshHistory();
-    } catch (e: any) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message || "请求失败"}` }]);
+    } catch (error: unknown) {
+      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${toErrorMessage(error, "请求失败")}` }]);
     } finally {
       setLoading(false);
     }
@@ -131,6 +211,8 @@ export default function AIPanel() {
     if (days < 7) return `${days}天前`;
     return date.toLocaleDateString();
   };
+
+  const enabledConfigs = aiConfigs.filter((config) => config.enabled);
 
   return (
     <div className="h-full flex">
@@ -171,8 +253,8 @@ export default function AIPanel() {
               <select
                 value={mode}
                 onChange={(e) => {
-                  const v = e.target.value as any;
-                  if (v === "chat" || v === "analysis") setMode(v);
+                  const value = e.target.value;
+                  if (value === "chat" || value === "analysis") setMode(value);
                 }}
                 className="px-3 py-1.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
@@ -191,20 +273,28 @@ export default function AIPanel() {
             </label>
 
             <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500">模型:</span>
-            <select
-              value={selectedModel !== undefined ? String(selectedModel) : ""}
-              onChange={(e) => setSelectedModel(e.target.value ? parseInt(e.target.value) : undefined)}
-              className="px-3 py-1.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {aiConfigs.filter((c) => c.enabled).map((config) => (
-                <option key={config.id} value={config.id}>{config.name}</option>
-              ))}
-              {aiConfigs.filter((c) => c.enabled).length === 0 && (
-                <option value="">请先配置AI模型</option>
-              )}
-            </select>
-          </div>
+              <span className="text-sm text-gray-500">模型:</span>
+              <select
+                value={selectedModel !== undefined ? String(selectedModel) : ""}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (!value) {
+                    setSelectedModel(undefined);
+                    return;
+                  }
+                  const nextValue = Number(value);
+                  setSelectedModel(Number.isFinite(nextValue) ? nextValue : undefined);
+                }}
+                className="px-3 py-1.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {enabledConfigs.map((config) => (
+                  <option key={config.id} value={config.id}>{config.name}</option>
+                ))}
+                {enabledConfigs.length === 0 && (
+                  <option value="">请先配置AI模型</option>
+                )}
+              </select>
+            </div>
           </div>
         </div>
 

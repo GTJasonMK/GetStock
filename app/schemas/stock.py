@@ -6,7 +6,7 @@
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ============ FollowedStock Schemas ============
@@ -51,8 +51,7 @@ class FollowedStockResponse(FollowedStockBase):
     current_price: Optional[float] = None
     change_percent: Optional[float] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============ Group Schemas ============
@@ -89,8 +88,7 @@ class GroupResponse(GroupBase):
     updated_at: datetime
     stocks: List[GroupStockItem] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============ Stock Search Schemas ============

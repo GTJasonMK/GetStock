@@ -1,6 +1,21 @@
 @echo off
+setlocal EnableExtensions
+
+rem Ensure UTF-8 output (best-effort)
+rem NOTE: Keep CRLF line endings (see .gitattributes) for best cmd.exe compatibility.
 chcp 65001 >nul
-title Stock Recon - 一键启动
+
+title Stock Recon
 cd /d "%~dp0"
+
+rem Optional: backend hot reload
+rem set BACKEND_RELOAD=true
+
+rem Python UTF-8 output
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
 python start.py
+
+endlocal
 pause

@@ -160,6 +160,30 @@ irm https://astral.sh/uv/install.ps1 | iex
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+### 4. Next.js 构建提示 SWC 缺失
+
+如果出现 `Failed to load SWC binary` 或 `Next.js build worker exited`，通常是因为跨系统复用了 `frontend/node_modules`（例如 Windows 的依赖目录拿到 Linux 使用）。
+
+Windows 可直接一键修复：
+
+```bash
+frontend\\scripts\\repair-deps-win.bat
+```
+
+请在前端目录重新安装依赖：
+
+```bash
+cd frontend
+rm -rf node_modules .next
+npm ci --prefer-offline --no-audit --no-fund
+```
+
+然后重试：
+
+```bash
+npm run build
+```
+
 ---
 
 ## 开发

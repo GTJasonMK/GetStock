@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.settings import DataSourceConfig
 from app.datasources.registry import load_client_class
+from app.utils.helpers import parse_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -455,10 +456,29 @@ class DataSourceManager:
         def _validate_kline_response(resp: Any) -> bool:
             return bool(getattr(resp, "data", None))
 
-        sources = await self._resolve_sources(
-            allowed=["tencent", "eastmoney"],
-            default_order=["tencent", "eastmoney"],
-        )
+        market, _ = parse_stock_code(code)
+        period_norm = (period or "day").strip().lower()
+
+        # 港/美股：当前仅支持日/周/月（akshare 兜底；腾讯对港股也可能可用）
+        if market in {"hk", "us"} and period_norm not in {"day", "week", "month"}:
+            raise ValueError("港/美股 K线仅支持 day/week/month")
+
+        if market == "us":
+            sources = await self._resolve_sources(
+                allowed=["akshare"],
+                default_order=["akshare"],
+            )
+        elif market == "hk":
+            sources = await self._resolve_sources(
+                allowed=["tencent", "akshare"],
+                default_order=["tencent", "akshare"],
+            )
+        else:
+            sources = await self._resolve_sources(
+                allowed=["tencent", "eastmoney"],
+                default_order=["tencent", "eastmoney"],
+            )
+
         return await self.execute_with_failover(
             "get_kline",
             code,

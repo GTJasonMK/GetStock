@@ -23,6 +23,7 @@
 - Run locally (backend + frontend): `python start.py`
   - Defaults: backend `http://localhost:8001`, frontend `http://localhost:3001`
   - Override ports: `BACKEND_PORT=8001 FRONTEND_PORT=3001 python start.py`
+  - Windows shortcuts: `install.bat` / `start.bat` (backend hot-reload defaults off; set `BACKEND_RELOAD=true` to enable)
 - Backend only: `uvicorn app.main:app --reload --port 8001`
 - Frontend only: `cd frontend && npm install && npm run dev -- --port 3001`
 - Frontend lint/build: `cd frontend && npm run lint` / `npm run build`

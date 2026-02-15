@@ -1,8 +1,15 @@
-.venv
-.venv_dev
-.codex
-data
-docs
-tests
+# Python
+.venv/
+.venv_dev/
+**/__pycache__/
+*.pyc
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+
+# Local artifacts
+.codex/
+data/
 .env
 verification.md
